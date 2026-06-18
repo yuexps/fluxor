@@ -49,26 +49,22 @@ window.Proxies = (function() {
     function updateDOM() {
         if (!container) return;
         
-        // 遍历每个代理组卡片，只更新文本和样式
         document.querySelectorAll('.proxy-group-card').forEach(card => {
             const groupName = card.dataset.group;
             const group = currentProxies[groupName];
             if (!group) return;
 
-            // 更新当前选中标签
             const currentEl = card.querySelector('.current-proxy');
             if (currentEl) {
                 currentEl.textContent = `${t('proxies.current')}: ${group.now || '-'}`;
             }
 
-            // 同步折叠状态
             const listEl = card.querySelector('.proxy-list');
             const iconEl = card.querySelector('.toggle-icon');
             const isExpanded = expandedState[groupName] === true;
             if (listEl) listEl.style.display = isExpanded ? 'grid' : 'none';
             if (iconEl) iconEl.textContent = isExpanded ? '▼' : '▶';
 
-            // 更新每个节点的状态
             card.querySelectorAll('.proxy-item').forEach(item => {
                 const proxyName = item.dataset.proxy;
                 const isSelected = group.now === proxyName;
@@ -118,14 +114,13 @@ window.Proxies = (function() {
     async function testDelay(proxyName) {
         if (testingSet.has(proxyName)) return;
         
-        // 检查缓存是否有效
         const cached = delayCache[proxyName];
         if (cached && !isCacheExpired(cached)) {
-            return; // 缓存有效，跳过测速
+            return;
         }
         
         testingSet.add(proxyName);
-        updateDOM(); // 立即显示"测速中"
+        updateDOM();
 
         try {
             const url = `/proxies/${encodeURIComponent(proxyName)}/delay?url=${encodeURIComponent(TEST_URL)}&timeout=${TIMEOUT}`;
@@ -187,7 +182,6 @@ window.Proxies = (function() {
 
     // ==================== 节点切换（乐观更新） ====================
     async function switchProxy(groupName, proxyName) {
-        // 乐观更新 UI
         if (currentProxies[groupName]) {
             currentProxies[groupName].now = proxyName;
             updateDOM();
@@ -202,7 +196,6 @@ window.Proxies = (function() {
             showToast(`${t('proxies.switched')}: ${groupName} → ${proxyName}`, 'success');
         } catch (err) {
             console.error('[Proxies] 切换失败:', err);
-            // 回滚 UI
             await fetchProxies(false);
             showToast(t('proxies.switch_failed') + ': ' + err.message, 'error');
         }
@@ -228,15 +221,29 @@ window.Proxies = (function() {
     function renderFull() {
         if (!container) return;
         
+        // 获取所有要显示的组（Selector, URLTest, Fallback），并按优先级排序
         const groups = Object.entries(currentProxies)
-            .filter(([, g]) => ['Selector', 'URLTest', 'Fallback'].includes(g.type));
+            .filter(([, g]) => ['Selector', 'URLTest', 'Fallback'].includes(g.type))
+            .sort((a, b) => {
+                const aName = a[0];
+                const bName = b[0];
+                const getPriority = (name) => {
+                    if (name.includes('节点选择')) return 0;
+                    if (name.includes('手动选择')) return 1;
+                    if (name.includes('自动选择')) return 2;
+                    return 3;
+                };
+                const aPriority = getPriority(aName);
+                const bPriority = getPriority(bName);
+                if (aPriority !== bPriority) return aPriority - bPriority;
+                return aName.localeCompare(bName);
+            });
 
         if (groups.length === 0) {
             container.innerHTML = `<div class="card"><div style="padding:40px;text-align:center;color:var(--text-secondary,#64748b);">${t('proxies.empty')}</div></div>`;
             return;
         }
 
-        // 内嵌样式（使用 CSS 变量，支持主题切换）
         container.innerHTML = `
             <style>
                 .proxy-toolbar{display:flex;justify-content:flex-end;margin-bottom:16px;gap:8px;flex-wrap:wrap}
@@ -289,14 +296,13 @@ window.Proxies = (function() {
                                         <button class="delay-test-btn ${getDelayClass(cached?.delay)}" data-proxy="${escapeHtml(p)}">${formatDelay(cached)}</button>
                                     </div>
                                 `;
-                            }).join('')}}
+                            }).join('')}
                         </div>
                     </div>
                 `;
             }).join('')}
         `;
 
-        // 事件委托（容器级监听）
         container.removeEventListener('click', handleContainerClick);
         container.addEventListener('click', handleContainerClick);
         document.getElementById('test-all-btn')?.addEventListener('click', () => testAllDelays());
@@ -304,14 +310,12 @@ window.Proxies = (function() {
 
     // ==================== 统一事件委托 ====================
     function handleContainerClick(e) {
-        // 测速按钮
         const testBtn = e.target.closest('.delay-test-btn');
         if (testBtn) {
             e.stopPropagation();
             testDelay(testBtn.dataset.proxy);
             return;
         }
-        // 组头折叠
         const header = e.target.closest('.group-header');
         if (header) {
             const groupName = header.dataset.group;
@@ -321,7 +325,6 @@ window.Proxies = (function() {
             }
             return;
         }
-        // 节点选择
         const item = e.target.closest('.proxy-item');
         if (item) {
             switchProxy(item.dataset.group, item.dataset.proxy);

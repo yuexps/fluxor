@@ -12,15 +12,16 @@ import (
 	"sync"
 )
 
-
 // SubscribeConfig 订阅配置结构体（与前端 JSON 完全对应）
 type SubscribeConfig struct {
-	ProxyPort     int            `json:"proxy_port"`
-	PanelPort     int            `json:"panel_port"`
-	PanelSecret   string         `json:"panel_secret"`
-	RuleGroup     string         `json:"rule_group"`
-	PrefixSwitch  bool           `json:"prefix_switch"`
-	Subscriptions []Subscription `json:"subscriptions"`
+	ProxyPort        int            `json:"proxy_port"`
+	PanelPort        int            `json:"panel_port"`
+	PanelSecret      string         `json:"panel_secret"`
+	RuleGroup        string         `json:"rule_group"`
+	PrefixSwitch     bool           `json:"prefix_switch"`
+	UIPanel          string         `json:"ui_panel"` // "metacubexd" 或 "zashboard"
+	MetaBackendURL   string         `json:"meta_backend_url"` // MetaCubeXD 后端地址，空表示不修改
+	Subscriptions    []Subscription `json:"subscriptions"`
 }
 
 type Subscription struct {
@@ -36,20 +37,52 @@ var (
 	subscribeMu     sync.RWMutex
 )
 
-// loadSubscribeConfig 从文件加载订阅配置（启动时调用）
+// loadSubscribeConfig 从文件加载订阅配置（启动时调用），若失败则设置默认值
 func loadSubscribeConfig() {
 	subscribeMu.Lock()
 	defer subscribeMu.Unlock()
+
+	defaultCfg := SubscribeConfig{
+		ProxyPort:      7790,
+		PanelPort:      9090,
+		PanelSecret:    "",
+		RuleGroup:      "base",
+		PrefixSwitch:   false,
+		UIPanel:        "metacubexd",
+		MetaBackendURL: "",
+		Subscriptions:  []Subscription{},
+	}
+
 	data, err := os.ReadFile(subscribeConfigFile)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			log.Printf("读取订阅配置失败: %v", err)
 		}
+		subscribeConfig = defaultCfg
 		return
 	}
-	if err := json.Unmarshal(data, &subscribeConfig); err != nil {
-		log.Printf("解析订阅配置失败: %v", err)
+
+	var tmp SubscribeConfig
+	if err := json.Unmarshal(data, &tmp); err != nil {
+		log.Printf("解析订阅配置失败: %v，使用默认配置", err)
+		subscribeConfig = defaultCfg
+		return
 	}
+
+	if tmp.ProxyPort == 0 {
+		tmp.ProxyPort = defaultCfg.ProxyPort
+	}
+	if tmp.PanelPort == 0 {
+		tmp.PanelPort = defaultCfg.PanelPort
+	}
+	if tmp.UIPanel == "" {
+		tmp.UIPanel = defaultCfg.UIPanel
+	}
+	if tmp.Subscriptions == nil {
+		tmp.Subscriptions = []Subscription{}
+	}
+	subscribeConfig = tmp
+	log.Printf("成功加载订阅配置：%d 个订阅", len(subscribeConfig.Subscriptions))
 }
 
 // saveSubscribeConfig 保存订阅配置到文件
@@ -118,7 +151,6 @@ func handleGenerateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 删除旧配置文件（若存在）
 	if _, err := os.Stat(configTarget); err == nil {
 		if err := os.Remove(configTarget); err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "删除旧配置文件失败: "+err.Error())
@@ -126,7 +158,6 @@ func handleGenerateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 持久化新配置
 	subscribeMu.Lock()
 	subscribeConfig = cfg
 	subscribeMu.Unlock()
@@ -135,13 +166,19 @@ func handleGenerateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 生成配置文件
 	if err := generateConfig(cfg); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "生成配置文件失败: "+err.Error())
 		return
 	}
 
-	// 重载内核（热重启）
+	// 如果设置了 MetaCubeXD 后端地址，则修改 config.js
+	if cfg.MetaBackendURL != "" {
+		if err := modifyMetaConfig(cfg.MetaBackendURL); err != nil {
+			log.Printf("[WARN] 修改 MetaCubeXD 后端地址失败: %v", err)
+			// 仅记录警告，不中断流程
+		}
+	}
+
 	if err := reloadCore(); err != nil {
 		respondJSON(w, http.StatusOK, map[string]string{
 			"status":  "warning",
@@ -158,15 +195,29 @@ func handleGenerateConfig(w http.ResponseWriter, r *http.Request) {
 
 // generateConfig 根据订阅配置生成 config.yaml
 func generateConfig(cfg SubscribeConfig) error {
-	// 无订阅时生成基本配置
+	// 无订阅时生成基本配置（使用配置中的端口和密钥）
 	if len(cfg.Subscriptions) == 0 {
-		basic := `mixed-port: 7790
+		basic := fmt.Sprintf(`mixed-port: %d
 allow-lan: true
 mode: rule
 log-level: silent
-external-controller-unix: '/var/apps/Fluxor/target/core.sock'
-external-controller: '0.0.0.0:9090'
-`
+external-controller-unix: '%s'
+external-controller: '0.0.0.0:%d'
+`, cfg.ProxyPort, coreSocket, cfg.PanelPort)
+		if cfg.PanelSecret != "" {
+			basic += fmt.Sprintf("secret: '%s'\n", cfg.PanelSecret)
+		}
+		// 无订阅时也支持外置面板设置，直接写入
+		uiSelect := "ui/meta"
+		uiURL := ""
+		if cfg.UIPanel == "zashboard" {
+			uiSelect = "ui/zash"
+			uiURL = `external-ui-url: "https://github.com/Zephyruso/zashboard/releases/latest/download/dist-cdn-fonts.zip"`
+		}
+		basic += fmt.Sprintf("external-ui: %s\n", uiSelect)
+		if uiURL != "" {
+			basic += uiURL + "\n"
+		}
 		dir := filepath.Dir(configTarget)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return fmt.Errorf("创建目录失败: %w", err)
@@ -174,7 +225,7 @@ external-controller: '0.0.0.0:9090'
 		return os.WriteFile(configTarget, []byte(basic), 0644)
 	}
 
-	// 生成 proxy-providers 块
+	// 生成 proxy-providers 子项（不包含头部，每项缩进2个空格）
 	var providersBuf strings.Builder
 	for i, sub := range cfg.Subscriptions {
 		interval := sub.UpdateInterval
@@ -223,24 +274,38 @@ external-controller: '0.0.0.0:9090'
 	if err != nil {
 		return fmt.Errorf("读取模板文件失败: %w", err)
 	}
+	tplStr := string(tplContent)
 
-	// 自动修正模板中的 proxy-providers 占位符（顶格无冒号）
-	fixedTpl := regexp.MustCompile(`(?m)^[ \t]*\$\{PROXY_PROVIDERS\}:?[ \t]*`).ReplaceAllString(string(tplContent), "${PROXY_PROVIDERS}")
+	// 根据面板选择设置 external-ui 和 external-ui-url
+	uiSelect := "ui/meta"
+	uiURL := ""
+	if cfg.UIPanel == "zashboard" {
+		uiSelect = "ui/zash"
+		uiURL = `external-ui-url: "https://github.com/Zephyruso/zashboard/releases/latest/download/dist-cdn-fonts.zip"`
+	}
 
+	// 替换所有占位符
 	replacer := strings.NewReplacer(
 		"${PROXY_PORT}", fmt.Sprintf("%d", cfg.ProxyPort),
 		"${UI_PORT}", fmt.Sprintf("%d", cfg.PanelPort),
 		"${UI_PASSWORD}", cfg.PanelSecret,
 		"${SUB_NAME}", strings.Join(subNames(cfg.Subscriptions), ","),
 		"${PROXY_PROVIDERS}", providersBuf.String(),
+		"${UI_SELECT}", uiSelect,
+		"${UI_URL}", uiURL,
 	)
-	configContent := replacer.Replace(fixedTpl)
+	configContent := replacer.Replace(tplStr)
 
-	// 清理可能残留的 external-ui 行
-	reExternal := regexp.MustCompile(`(?m)^\s*external-ui:.*\n?`)
-	configContent = reExternal.ReplaceAllString(configContent, "")
-	reExternalURL := regexp.MustCompile(`(?m)^\s*external-ui-url:.*\n?`)
-	configContent = reExternalURL.ReplaceAllString(configContent, "")
+	// ----- 确保 proxy-providers 字段存在（如果 providersBuf 非空） -----
+	if providersBuf.Len() > 0 && !strings.Contains(configContent, "proxy-providers:") {
+		configContent += "\nproxy-providers:\n" + providersBuf.String()
+	}
+
+	// 清理可能残留的 external-ui 行（如果 uiURL 为空，但模板中可能还有 external-ui-url 行，需清理）
+	if uiURL == "" {
+		reExternalURL := regexp.MustCompile(`(?m)^\s*external-ui-url:.*\n?`)
+		configContent = reExternalURL.ReplaceAllString(configContent, "")
+	}
 
 	// 清理多余空行
 	configContent = regexp.MustCompile(`\n{3,}`).ReplaceAllString(configContent, "\n\n")
@@ -266,4 +331,23 @@ func respondJSON(w http.ResponseWriter, statusCode int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	json.NewEncoder(w).Encode(data)
+}
+
+// modifyMetaConfig 修改 MetaCubeXD 的 config.js 文件中的后端地址
+// 该函数从 handlers_settings.go 移入此处
+func modifyMetaConfig(backendURL string) error {
+	configPath := filepath.Join(metaDir, metaConfigFile)
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		return fmt.Errorf("config.js 不存在")
+	}
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		return err
+	}
+	re := regexp.MustCompile(`defaultBackendURL:\s*''`)
+	newContent := re.ReplaceAllString(string(content), fmt.Sprintf("defaultBackendURL: '%s'", backendURL))
+	if string(content) == newContent {
+		return fmt.Errorf("未找到 defaultBackendURL 配置项或格式不匹配")
+	}
+	return os.WriteFile(configPath, []byte(newContent), 0644)
 }

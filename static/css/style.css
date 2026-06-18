@@ -17,6 +17,9 @@
     --card-bg: #1e293b;
     --hover-bg: #334155;
     --shadow: 0 4px 12px rgba(0,0,0,0.15);
+    /* 新增次要按钮背景色（深色主题） */
+    --btn-secondary-bg: #2d3748;
+    --btn-secondary-hover-bg: #3d4a5c;
 }
 
 [data-theme="light"] {
@@ -37,6 +40,9 @@
     --card-bg: #ffffff;
     --hover-bg: #e2e8f0;
     --shadow: 0 4px 12px rgba(0,0,0,0.08);
+    /* 新增次要按钮背景色（浅色主题） */
+    --btn-secondary-bg: #e8ecf0;
+    --btn-secondary-hover-bg: #d1d5db;
 }
 
 /* ========== 全局重置 ========== */
@@ -103,14 +109,14 @@ body {
     color: var(--text-primary);
     cursor: pointer;
     padding: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 .sidebar-toggle svg {
-    width: 20px;
-    height: 20px;
+    width: 24px;
+    height: 24px;
 }
-.sidebar.collapsed .icon-collapse { display: none; }
-.sidebar.collapsed .icon-expand { display: inline; }
-.sidebar .icon-expand { display: none; }
 
 .sidebar-nav {
     flex: 1;
@@ -302,6 +308,16 @@ canvas {
     flex-wrap: wrap;
     margin-top: 16px;
 }
+/* 修复次要按钮底色 */
+.btn-secondary {
+    background: var(--btn-secondary-bg);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+}
+.btn-secondary:hover {
+    background: var(--btn-secondary-hover-bg);
+    border-color: var(--text-secondary);
+}
 
 /* ========== 配置页面 ========== */
 .config-section {
@@ -317,7 +333,7 @@ canvas {
     margin-bottom: 12px;
     flex-wrap: wrap;
 }
-.config-row label {
+.config-row label:not(.toggle-switch) {
     width: 140px;
     flex-shrink: 0;
     font-weight: 500;
@@ -326,6 +342,7 @@ canvas {
 .config-row input,
 .config-row select {
     width: 200px;
+    max-width: 100%;
     flex-shrink: 0;
     padding: 8px 12px;
     border: 1px solid var(--border-color);
@@ -525,7 +542,7 @@ input:checked + .slider:before {
     gap: 8px;
 }
 
-/* ========== 响应式 ========== */
+/* ========== 移动端响应式 ========== */
 @media (max-width: 768px) {
     .sidebar {
         position: fixed;
@@ -540,9 +557,9 @@ input:checked + .slider:before {
     }
     .main-content {
         padding: 12px;
-        padding-bottom: 70px; /* 为底部导航留空间 */
+        padding-bottom: 70px;
     }
-    .config-row label {
+    .config-row label:not(.toggle-switch) {
         width: 100%;
     }
     .config-row input,
@@ -571,6 +588,9 @@ input:checked + .slider:before {
         color: var(--text-secondary);
         text-decoration: none;
         font-size: 0.8em;
+        background: transparent;
+        border: none;
+        cursor: pointer;
     }
     .mobile-tab-item.active {
         color: var(--accent);
@@ -580,4 +600,275 @@ input:checked + .slider:before {
         height: 20px;
         margin-bottom: 2px;
     }
+    .mobile-tab-item .tab-label {
+        font-size: 10px;
+        line-height: 1.2;
+    }
+        /* 订阅页面移动端自适应 */
+    #subscription-content .config-row input,
+    #subscription-content .config-row select {
+        width: 100% !important;    /* 强制全宽 */
+        flex: 1 1 100% !important;
+        min-width: 0;
+    }
+    #subscription-content .config-row .password-wrapper {
+        width: 100% !important;
+        max-width: 100% !important;
+        flex: 1 1 100% !important;
+    }
+    #subscription-content .config-row .password-wrapper input {
+        flex: 1 1 0;
+        width: auto;
+        min-width: 0;
+    }
+    /* 移动端 DNS 查询和 TUN 弹窗下拉自适应 */
+    #dns-domain,
+    #dns-type,
+    #modal-tun-stack {
+        width: 100% !important;
+        flex-shrink: 1;
+    }
+}
+
+/* ========== 桌面端大屏优化 ========== */
+@media (min-width: 769px) {
+    .sidebar {
+        width: 150px;
+        transform: none !important;
+    }
+    .sidebar.collapsed {
+        width: 60px;
+    }
+    .sidebar.collapsed .sidebar-nav .nav-label,
+    .sidebar.collapsed .sidebar-footer .lang-toggle span,
+    .sidebar.collapsed .sidebar-footer .theme-toggle span {
+        display: none;
+    }
+    .main-content {
+        transition: margin-left 0.2s;
+    }
+}
+/* ===== 侧边栏底部按钮在折叠时的布局 ===== */
+.sidebar.collapsed .sidebar-footer {
+    flex-direction: column;      /* 纵向排列 */
+    gap: 4px;
+    padding: 8px 0;
+    align-items: center;
+    justify-content: center;
+}
+
+.sidebar.collapsed .sidebar-footer .lang-toggle,
+.sidebar.collapsed .sidebar-footer .theme-toggle {
+    padding: 4px 0;
+    width: 100%;                 /* 占满宽度，便于点击 */
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 13px;             /* 适当缩小字号 */
+}
+
+/* 取消之前隐藏文字的行为，确保“简/EN”可见 */
+.sidebar.collapsed .sidebar-footer .lang-toggle span {
+    display: inline;             /* 或 block，确保显示 */
+}
+
+/* 折叠时主题切换图标略微缩小 */
+.sidebar.collapsed .sidebar-footer .theme-toggle svg {
+    width: 18px;
+    height: 18px;
+}
+
+/* 展开时恢复横向排列（默认即为 row，无需额外设置） */
+.sidebar:not(.collapsed) .sidebar-footer {
+    flex-direction: row;
+    gap: 8px;
+    padding: 12px;
+}
+/* ========== 订阅模块专属样式 ========== */
+#subscription-content .config-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+#subscription-content .config-row label:not(.toggle-switch) {
+    width: 120px;
+    flex-shrink: 0;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+/* ----- 基础输入框和下拉样式（桌面默认） ----- */
+#subscription-content .config-row input,
+#subscription-content .config-row select {
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 14px;
+    transition: border-color 0.2s;
+    width: auto;          /* 由具体 id 决定宽度 */
+    flex: 0 1 auto;       /* 不拉伸，但可收缩 */
+    min-width: 0;
+    max-width: 100%;
+}
+#subscription-content .config-row input:focus,
+#subscription-content .config-row select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* ---- 各个输入框/下拉的固定宽度（桌面） ---- */
+#subProxyPort,
+#subPanelPort {
+    width: 150px;          /* 端口输入框固定 150px */
+}
+#subUIPanel,
+#subMetaBackend {
+    width: 220px;          /* 下拉菜单和后端地址输入框固定 220px */
+}
+/* 密码输入框由 .password-wrapper 控制宽度，见下 */
+
+/* 密码包装器（桌面） */
+#subscription-content .config-row .password-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 280px;      /* 限制最大宽度，避免过宽 */
+    width: auto;
+    flex: 0 1 auto;
+}
+#subscription-content .config-row .password-wrapper input {
+    flex: 1 1 0;          /* 填充剩余空间 */
+    min-width: 0;
+    width: auto;
+    padding-right: 32px;   /* 为眼睛按钮留空（JS 中已内联） */
+}
+#subscription-content .config-row .password-toggle {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-secondary);
+    padding: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.2s;
+}
+#subscription-content .config-row .password-toggle:hover {
+    color: var(--text-primary);
+}
+
+/* 开关保持固定 */
+#subscription-content .config-row .toggle-switch {
+    flex-shrink: 0;
+}
+
+/* ----- 订阅列表优化（桌面和移动通用） ----- */
+.sub-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--card-bg);
+    padding: 12px 16px;
+    border-radius: 10px;
+    margin-bottom: 8px;
+    box-shadow: var(--shadow);
+    transition: background 0.2s;
+}
+.sub-item:hover {
+    background: var(--hover-bg);
+}
+.sub-item .info {
+    flex: 1;
+    min-width: 0;
+}
+.sub-item .info strong {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--text-primary);
+}
+.sub-item .info small {
+    display: block;          /* 每个 small 独占一行 */
+    color: var(--text-secondary);
+    font-size: 0.85em;
+    margin-bottom: 2px;
+}
+.sub-item .info .sub-url-container {
+    display: inline-flex;    /* 与按钮内联 */
+    align-items: center;
+    flex-wrap: wrap;
+    word-break: break-all;
+}
+.sub-item .info .sub-url-display {
+    word-break: break-all;
+    overflow-wrap: break-word;
+}
+.sub-item .actions {
+    display: flex;
+    gap: 8px;
+    margin-left: 12px;
+    flex-shrink: 0;
+}
+.sub-item .actions button {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 1.2em;
+    color: var(--text-secondary);
+    transition: color 0.2s;
+    padding: 4px 6px;
+}
+.sub-item .actions button:hover {
+    color: var(--text-primary);
+}
+
+/* 模态框内输入框样式保持与全局一致 */
+#subModal .modal-section input {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+}
+
+/* 统一 DNS 查询和 TUN 弹窗的下拉/输入框样式 */
+#dns-domain,
+#dns-type,
+#modal-tun-stack {
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 14px;
+    transition: border-color 0.2s;
+    width: 200px;          /* 与配置页其他输入框一致 */
+    max-width: 100%;
+    flex-shrink: 0;
+}
+#dns-domain:focus,
+#dns-type:focus,
+#modal-tun-stack:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+/* 外部控制卡片链接效果 */
+#external-control-card {
+    cursor: pointer;
+    transition: background 0.2s;
+}
+#external-control-card:hover {
+    background: var(--hover-bg);
+}
+#external-control-card a {
+    display: block;
+    text-decoration: none;
+    color: var(--text-primary);
+}
+#external-control-card a:hover {
+    color: var(--text-primary);
 }

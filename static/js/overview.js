@@ -1,17 +1,27 @@
-// 概览模块：流量监控 + 面板入口 + 内核控制 + 快捷操作
+// 概览模块：流量监控 + 外置面板入口 + 当前节点 + 内核状态显示（无控制）
 window.Overview = (function() {
     const BASE = window.BASE_URL || '';
     let uploadSpeeds = [], downloadSpeeds = [];
     let totalUpload = 0, totalDownload = 0;
     const maxPoints = 60;
     let canvas, ctx;
-    let pollTimer = null;
     let themeObserver = null, resizeObserver = null;
     let dpr = window.devicePixelRatio || 1;
     let rafPending = false;
     let cachedMaxY = 1024;
     let langEventListener = null;
     let coreRunning = false;
+
+    // WebSocket 实例
+    let wsTraffic = null;
+    let wsConnections = null;
+    let wsMemory = null;
+
+    // 内核状态轮询定时器
+    let statusTimer = null;
+
+    // 外置面板配置
+    let uiPanel = 'metacubexd'; // 默认
 
     // ---------- 工具函数 ----------
     function formatBytes(bytes) {
@@ -27,10 +37,13 @@ window.Overview = (function() {
         return String(str).replace(/[&<>]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
     }
 
-    // 构造完整 API URL - 确保正确处理 BASE_URL
     function buildApiUrl(path) {
         if (!BASE || BASE === '/') return path;
         return BASE.replace(/\/$/, '') + '/' + path.replace(/^\//, '');
+    }
+
+    function t(key) {
+        return (window.i18n && window.i18n.t) ? window.i18n.t(key) : key;
     }
 
     // ---------- 流量图表 ----------
@@ -64,6 +77,8 @@ window.Overview = (function() {
         const colors = getChartColors();
         const chartH = h * 0.9;
 
+        const offsetX = (maxPoints - uploadSpeeds.length) * stepX;
+
         ctx.strokeStyle = colors.grid; ctx.lineWidth = 1;
         ctx.font = '10px monospace'; ctx.textAlign = 'right'; ctx.fillStyle = colors.text;
         for (let i = 0; i <= 4; i++) {
@@ -76,11 +91,14 @@ window.Overview = (function() {
             if (data.length < 2) return;
             ctx.beginPath();
             for (let i = 0; i < data.length; i++) {
-                const x = i * stepX, y = h - (data[i] / cachedMaxY) * chartH;
+                const x = offsetX + i * stepX;
+                const y = h - (data[i] / cachedMaxY) * chartH;
                 i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
             }
             ctx.strokeStyle = stroke; ctx.lineWidth = 2; ctx.stroke();
-            ctx.lineTo((data.length - 1) * stepX, h); ctx.lineTo(0, h);
+            const lastX = offsetX + (data.length - 1) * stepX;
+            ctx.lineTo(lastX, h);
+            ctx.lineTo(offsetX, h);
             ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
         }
 
@@ -89,8 +107,8 @@ window.Overview = (function() {
 
         ctx.font = '12px sans-serif'; ctx.textAlign = 'left';
         ctx.fillStyle = colors.upload; ctx.fillRect(10, 10, 12, 12);
-        const uploadText = (window.i18n && window.i18n.t('overview.upload')) || '上传';
-        const downloadText = (window.i18n && window.i18n.t('overview.download')) || '下载';
+        const uploadText = t('overview.upload');
+        const downloadText = t('overview.download');
         ctx.fillText(uploadText, 28, 21);
         ctx.fillStyle = colors.download; ctx.fillRect(10, 28, 12, 12);
         ctx.fillText(downloadText, 28, 39);
@@ -101,103 +119,7 @@ window.Overview = (function() {
         if (!rafPending) { rafPending = true; requestAnimationFrame(drawChart); }
     }
 
-    // ---------- 数据获取（轮询） ----------
-    async function fetchStats() {
-        try {
-            const urls = {
-                traffic: buildApiUrl('/traffic'),
-                memory: buildApiUrl('/memory'),
-                connections: buildApiUrl('/connections'),
-                version: buildApiUrl('/version'),
-                status: buildApiUrl('/core/status')
-            };
-
-            console.log('[Overview] 正在获取数据，BASE_URL:', BASE, '实际 URL:', urls);
-
-            const [trafficResp, memResp, connResp, versionResp, statusResp] = await Promise.all([
-                fetch(urls.traffic).catch(e => { console.error('[Overview] 流量请求失败:', e); return null; }),
-                fetch(urls.memory).catch(e => { console.error('[Overview] 内存请求失败:', e); return null; }),
-                fetch(urls.connections).catch(e => { console.error('[Overview] 连接请求失败:', e); return null; }),
-                fetch(urls.version).catch(e => { console.error('[Overview] 版本请求失败:', e); return null; }),
-                fetch(urls.status).catch(e => { console.error('[Overview] 状态请求失败:', e); return null; })
-            ]);
-
-            if (trafficResp && trafficResp.ok) {
-                try {
-                    const t = await trafficResp.json();
-                    const up = t.up || t.upload || 0;
-                    const down = t.down || t.download || 0;
-                    updateSpeed(up, down);
-                } catch (e) {
-                    console.error('[Overview] 解析流量数据失败:', e);
-                }
-            } else if (trafficResp) {
-                console.warn('[Overview] 流量请求返回状态:', trafficResp.status);
-            }
-
-            if (memResp && memResp.ok) {
-                try {
-                    const m = await memResp.json();
-                    const el = document.getElementById('ov-memory');
-                    if (el) el.textContent = formatBytes(m.inuse || m.memory || 0);
-                } catch (e) {
-                    console.error('[Overview] 解析内存数据失败:', e);
-                }
-            }
-
-            if (connResp && connResp.ok) {
-                try {
-                    const c = await connResp.json();
-                    const elConn = document.getElementById('ov-connections');
-                    if (elConn) elConn.textContent = c.connections ? c.connections.length : 0;
-                    if (c.uploadTotal !== undefined && c.downloadTotal !== undefined) {
-                        updateTotals(c.uploadTotal, c.downloadTotal);
-                    }
-                } catch (e) {
-                    console.error('[Overview] 解析连接数据失败:', e);
-                }
-            }
-
-            if (versionResp && versionResp.ok) {
-                try {
-                    const v = await versionResp.json();
-                    const el = document.getElementById('ov-core-version');
-                    if (el) el.textContent = `${v.type || 'Mihomo'} ${v.version || ''}`;
-                } catch (e) {
-                    console.error('[Overview] 解析版本数据失败:', e);
-                }
-            } else {
-                const el = document.getElementById('ov-core-version');
-                if (el) el.textContent = '未知';
-            }
-
-            if (statusResp && statusResp.ok) {
-                try {
-                    const s = await statusResp.json();
-                    coreRunning = s.running;
-                    updateCoreButton();
-                } catch (e) {
-                    console.error('[Overview] 解析状态数据失败:', e);
-                }
-            }
-        } catch (e) {
-            console.error('[Overview] 概览数据获取异常:', e);
-        }
-    }
-
-    function startPolling() {
-        if (pollTimer) clearInterval(pollTimer);
-        fetchStats();
-        pollTimer = setInterval(fetchStats, 3000);
-    }
-
-    function stopPolling() {
-        if (pollTimer) {
-            clearInterval(pollTimer);
-            pollTimer = null;
-        }
-    }
-
+    // ---------- 数据更新函数 ----------
     function updateSpeed(up, down) {
         uploadSpeeds.push(up); downloadSpeeds.push(down);
         if (uploadSpeeds.length > maxPoints) uploadSpeeds.shift();
@@ -217,83 +139,183 @@ window.Overview = (function() {
         if (elDt) elDt.textContent = formatBytes(totalDownload);
     }
 
-    function updateCoreButton() {
-        const btn = document.getElementById('ov-core-start-stop');
-        if (btn) {
-            if (coreRunning) {
-                btn.textContent = '⏹️ 停止内核';
-                btn.className = 'btn btn-danger';
-            } else {
-                btn.textContent = '▶️ 启动内核';
-                btn.className = 'btn btn-primary';
+    // ---------- 更新当前节点 ----------
+    function updateProxySelection(proxies) {
+        const container = document.getElementById('current-proxy-container');
+        if (!container) return;
+
+        const entries = Object.entries(proxies || {});
+        const mainGroup = entries.find(([, g]) => g.type === 'Selector' && g.name.includes('节点选择'));
+        if (!mainGroup) {
+            container.innerHTML = '<div style="color:var(--text-secondary);font-size:0.9em;">暂无节点选择</div>';
+            return;
+        }
+
+        const [, group] = mainGroup;
+        let selected = group.now || '-';
+
+        if (selected.includes('自动选择')) {
+            const autoGroup = entries.find(([, g]) => g.type === 'URLTest' && g.name === selected);
+            if (autoGroup) {
+                selected = autoGroup[1].now || '-';
+            }
+        } else if (selected.includes('手动选择')) {
+            const manualGroup = entries.find(([, g]) => g.type === 'Selector' && g.name === selected);
+            if (manualGroup) {
+                selected = manualGroup[1].now || '-';
             }
         }
+
+        container.innerHTML = `<div style="font-weight:500;color:var(--accent);">${escapeHtml(selected)}</div>`;
     }
 
-    // ---------- 操作事件 ----------
-    async function toggleCore() {
-        const url = coreRunning ? buildApiUrl('/core/stop') : buildApiUrl('/core/start');
+    // ---------- 获取订阅配置（面板选择） ----------
+    async function fetchSubscribeConfig() {
         try {
-            const resp = await fetch(url, { method: 'POST' });
-            const result = await resp.json();
-            if (resp.ok && result.status === 'ok') {
-                alert(result.message || '操作成功');
-                setTimeout(fetchStats, 1500);
+            const resp = await fetch(buildApiUrl('/subscribe/config'));
+            if (!resp.ok) return;
+            const cfg = await resp.json();
+            uiPanel = cfg.ui_panel || 'metacubexd';
+            updatePanelLink();
+        } catch (e) {
+            console.warn('[Overview] 获取订阅配置失败，使用默认面板', e);
+        }
+    }
+
+    function updatePanelLink() {
+        const container = document.getElementById('external-control-card');
+        if (!container) return;
+        const panelName = uiPanel === 'zashboard' ? 'Zashboard' : 'MetaCubeXD';
+        const path = uiPanel === 'zashboard' ? '/zash/' : '/meta/';
+        const href = BASE + path;
+        container.innerHTML = `
+            <a href="${href}" target="_blank" style="display:block;text-decoration:none;color:var(--text-primary);">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <span style="font-size:0.85em;color:var(--text-secondary);">${t('overview.external_control')}</span>
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                        <polyline points="15 3 21 3 21 9"/>
+                        <line x1="10" y1="14" x2="21" y2="3"/>
+                    </svg>
+                </div>
+                <div style="font-weight:500;color:var(--accent);margin-top:4px;">${panelName}</div>
+            </a>
+        `;
+    }
+
+    // ---------- WebSocket 建立 ----------
+    function startWebSockets() {
+        if (wsTraffic) wsTraffic.close();
+        if (wsConnections) wsConnections.close();
+        if (wsMemory) wsMemory.close();
+
+        wsTraffic = window.API.wsConnect('/traffic', (e) => {
+            try {
+                let up = 0, down = 0;
+                if (typeof e.data === 'string') {
+                    const d = JSON.parse(e.data);
+                    up = d.up || d.upload || 0;
+                    down = d.down || d.download || 0;
+                } else if (e.data instanceof ArrayBuffer) {
+                    const v = new DataView(e.data);
+                    up = Number(v.getBigUint64(0, false));
+                    down = Number(v.getBigUint64(8, false));
+                }
+                updateSpeed(up, down);
+            } catch(err) {
+                console.warn('[Overview] Traffic WS error', err);
+            }
+        }, {
+            onError: (e) => console.error('[Overview] Traffic WS error', e),
+            onClose: () => console.log('[Overview] Traffic WS closed')
+        });
+
+        wsConnections = window.API.wsConnect('/connections', (e) => {
+            try {
+                const d = JSON.parse(e.data);
+                const elConn = document.getElementById('ov-connections');
+                if (elConn) elConn.textContent = d.connections ? d.connections.length : 0;
+                if (d.uploadTotal !== undefined && d.downloadTotal !== undefined) {
+                    updateTotals(d.uploadTotal, d.downloadTotal);
+                }
+            } catch(err) {
+                console.warn('[Overview] Connections WS error', err);
+            }
+        }, {
+            onError: (e) => console.error('[Overview] Connections WS error', e),
+            onClose: () => console.log('[Overview] Connections WS closed')
+        });
+
+        wsMemory = window.API.wsConnect('/memory', (e) => {
+            try {
+                let mem = 0;
+                if (typeof e.data === 'string') {
+                    const d = JSON.parse(e.data);
+                    mem = d.inuse || d.memory || 0;
+                } else if (e.data instanceof ArrayBuffer) {
+                    mem = Number(new DataView(e.data).getBigUint64(0, false));
+                }
+                const el = document.getElementById('ov-memory');
+                if (el) el.textContent = formatBytes(mem);
+            } catch(err) {
+                console.warn('[Overview] Memory WS error', err);
+            }
+        }, {
+            onError: (e) => console.error('[Overview] Memory WS error', e),
+            onClose: () => console.log('[Overview] Memory WS closed')
+        });
+    }
+
+    // ---------- 获取版本、内核状态和代理选择 ----------
+    async function fetchVersionStatus() {
+        try {
+            const [versionResp, statusResp, proxiesResp] = await Promise.all([
+                fetch(buildApiUrl('/version')).catch(() => null),
+                fetch(buildApiUrl('/core/status')).catch(() => null),
+                fetch(buildApiUrl('/proxies')).catch(() => null)
+            ]);
+
+            if (versionResp && versionResp.ok) {
+                try {
+                    const v = await versionResp.json();
+                    const el = document.getElementById('ov-core-version');
+                    let version = v.version || '';
+                    version = version.replace(/^v/, '');
+                    if (el) el.textContent = version;
+                } catch (e) { /* ignore */ }
             } else {
-                alert('操作失败: ' + (result.message || result.error || ''));
+                const el = document.getElementById('ov-core-version');
+                if (el) el.textContent = '未知';
+            }
+
+            if (statusResp && statusResp.ok) {
+                try {
+                    const s = await statusResp.json();
+                    coreRunning = s.running;
+                } catch (e) { /* ignore */ }
+            }
+
+            if (proxiesResp && proxiesResp.ok) {
+                try {
+                    const data = await proxiesResp.json();
+                    updateProxySelection(data.proxies);
+                } catch (e) { console.warn('[Overview] 解析代理数据失败', e); }
             }
         } catch (e) {
-            alert('网络错误: ' + e.message);
+            console.warn('[Overview] fetchVersionStatus error', e);
         }
     }
 
-    async function restartCore() {
-        if (!confirm('确定要重启内核吗？所有连接将断开。')) return;
-        try {
-            const resp = await fetch(buildApiUrl('/core/restart'), { method: 'POST' });
-            const result = await resp.json();
-            if (resp.ok && result.status === 'ok') {
-                alert('重启指令已发送');
-                setTimeout(fetchStats, 2000);
-            } else {
-                alert('重启失败: ' + (result.message || result.error || ''));
-            }
-        } catch (e) {
-            alert('网络错误: ' + e.message);
-        }
+    function startStatusPolling() {
+        if (statusTimer) clearInterval(statusTimer);
+        fetchVersionStatus();
+        statusTimer = setInterval(fetchVersionStatus, 10000);
     }
 
-    async function updateMeta() {
-        const btn = document.getElementById('ov-update-meta');
-        if (!btn) return;
-        btn.disabled = true;
-        btn.textContent = '⏳';
-        try {
-            const resp = await fetch(buildApiUrl('/update/meta'), { method: 'POST' });
-            const data = await resp.json();
-            alert(data.message || '更新操作完成');
-        } catch (e) {
-            alert('更新失败: ' + e.message);
-        } finally {
-            btn.disabled = false;
-            btn.textContent = '🔄';
-        }
-    }
-
-    async function updateZash() {
-        const btn = document.getElementById('ov-update-zash');
-        if (!btn) return;
-        btn.disabled = true;
-        btn.textContent = '⏳';
-        try {
-            const resp = await fetch(buildApiUrl('/update/zash'), { method: 'POST' });
-            const data = await resp.json();
-            alert(data.message || '更新操作完成');
-        } catch (e) {
-            alert('更新失败: ' + e.message);
-        } finally {
-            btn.disabled = false;
-            btn.textContent = '🔄';
+    function stopStatusPolling() {
+        if (statusTimer) {
+            clearInterval(statusTimer);
+            statusTimer = null;
         }
     }
 
@@ -330,50 +352,73 @@ window.Overview = (function() {
     function render() {
         const container = document.getElementById('overview-content');
         if (!container) return;
-        const t = (window.i18n && window.i18n.t) || (key => key);
 
         container.innerHTML = `
-            <div class="panel-cards">
-                <div class="panel-card meta-card">
-                    <a class="panel-link" href="${escapeHtml(BASE)}/meta/" target="_blank">MetaCubeXD</a>
-                    <button class="panel-update-btn" id="ov-update-meta" title="更新 MetaCubeXD">🔄</button>
+            <div class="stats-grid">
+                <div class="stat-box">
+                    <div class="stat-label">${t('overview.core_version')}</div>
+                    <div class="stat-value" id="ov-core-version">加载中...</div>
                 </div>
-                <div class="panel-card zash-card">
-                    <a class="panel-link" href="${escapeHtml(BASE)}/zash/" target="_blank">Zashboard</a>
-                    <button class="panel-update-btn" id="ov-update-zash" title="更新 Zashboard">🔄</button>
+                <div class="stat-box">
+                    <div class="stat-label">${t('overview.upload_speed')}</div>
+                    <div class="stat-value" id="ov-upload-speed">0 B/s</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">${t('overview.download_speed')}</div>
+                    <div class="stat-value" id="ov-download-speed">0 B/s</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">${t('overview.upload_total')}</div>
+                    <div class="stat-value" id="ov-upload-total">0 B</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">${t('overview.download_total')}</div>
+                    <div class="stat-value" id="ov-download-total">0 B</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">${t('overview.memory_usage')}</div>
+                    <div class="stat-value" id="ov-memory">N/A</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">${t('overview.active_connections')}</div>
+                    <div class="stat-value" id="ov-connections">0</div>
+                </div>
+                <!-- 外部控制卡片（放在最后） -->
+                <div class="stat-box" id="external-control-card">
+                    <a href="${BASE}/meta/" target="_blank" style="display:block;text-decoration:none;color:var(--text-primary);">
+                        <div style="display:flex;justify-content:space-between;align-items:center;">
+                            <span style="font-size:0.85em;color:var(--text-secondary);">${t('overview.external_control')}</span>
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                                <polyline points="15 3 21 3 21 9"/>
+                                <line x1="10" y1="14" x2="21" y2="3"/>
+                            </svg>
+                        </div>
+                        <div style="font-weight:500;color:var(--accent);margin-top:4px;">MetaCubeXD</div>
+                    </a>
                 </div>
             </div>
 
-            <div class="stats-grid">
-                <div class="stat-box"><div class="stat-label">${t('overview.core_version')}</div><div class="stat-value" id="ov-core-version">加载中...</div></div>
-                <div class="stat-box"><div class="stat-label">${t('overview.upload_speed')}</div><div class="stat-value" id="ov-upload-speed">0 B/s</div></div>
-                <div class="stat-box"><div class="stat-label">${t('overview.download_speed')}</div><div class="stat-value" id="ov-download-speed">0 B/s</div></div>
-                <div class="stat-box"><div class="stat-label">${t('overview.upload_total')}</div><div class="stat-value" id="ov-upload-total">0 B</div></div>
-                <div class="stat-box"><div class="stat-label">${t('overview.download_total')}</div><div class="stat-value" id="ov-download-total">0 B</div></div>
-                <div class="stat-box"><div class="stat-label">${t('overview.memory_usage')}</div><div class="stat-value" id="ov-memory">N/A</div></div>
-                <div class="stat-box"><div class="stat-label">${t('overview.active_connections')}</div><div class="stat-value" id="ov-connections">0</div></div>
+            <!-- 当前节点卡片 -->
+            <div class="card" style="margin-bottom:16px;">
+                <div style="display:flex; flex-wrap:wrap; align-items:center; gap:8px; line-height:1.6;">
+                    <h3 style="margin:0; flex-shrink:0; line-height:inherit;">${t('overview.current_node')}</h3>
+                    <div id="current-proxy-container" style="min-height:2em; flex:1 1 auto; text-align:left; word-break:break-word; line-height:inherit;">加载中...</div>
+                </div>
             </div>
 
             <div class="card">
                 <h3>${t('overview.traffic_trend')}</h3>
                 <canvas id="traffic-canvas"></canvas>
             </div>
-
-            <div class="button-group">
-                <button id="ov-core-start-stop" class="btn">⏳ 检测中...</button>
-                <button class="btn" id="ov-core-restart">🔄 重启内核</button>
-            </div>
         `;
 
-        // 绑定事件
-        document.getElementById('ov-core-start-stop').onclick = toggleCore;
-        document.getElementById('ov-core-restart').onclick = restartCore;
-        document.getElementById('ov-update-meta').onclick = updateMeta;
-        document.getElementById('ov-update-zash').onclick = updateZash;
+        fetchSubscribeConfig();
 
         initCanvas();
         observeTheme();
-        startPolling();
+        startWebSockets();
+        startStatusPolling();
     }
 
     // ---------- 语言变化处理 ----------
@@ -398,7 +443,11 @@ window.Overview = (function() {
     }
 
     function destroy() {
-        stopPolling();
+        if (wsTraffic) { wsTraffic.close(); wsTraffic = null; }
+        if (wsConnections) { wsConnections.close(); wsConnections = null; }
+        if (wsMemory) { wsMemory.close(); wsMemory = null; }
+        stopStatusPolling();
+
         if (themeObserver) themeObserver.disconnect();
         if (resizeObserver) resizeObserver.disconnect();
         uploadSpeeds = []; downloadSpeeds = [];

@@ -1,1 +1,0 @@
-window.Logs = { init: function() {}, render: function() {} };

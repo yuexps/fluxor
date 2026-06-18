@@ -1,11 +1,7 @@
 // 配置模块：可视化修改核心配置，支持实时保存和操作按钮
 window.Config = (function() {
-    const BASE = window.BASE_URL || '';
-
-    // 简单的 fetch 封装，统一拼接基础路径
-    function apiFetch(path, options) {
-        return fetch(BASE + path, options);
-    }
+    // 使用全局 API 模块
+    const api = window.API;
 
     // 端口校验（0 或 1025-65535）
     function validateConfig(payload) {
@@ -26,23 +22,25 @@ window.Config = (function() {
     }
 
     let currentConfig = null;
-    let proxySettings = {
-        enabled: false,
-        url: '',
-        token_enabled: false,
-        token: '',
-        modify_config: false,
-        config_backend_url: ''
-    };
     let saveTimeout = null;
     let isSaving = false;
     let abortController = null;
     let container = null;
 
+    // 内核状态
+    let coreRunning = false;
+    let coreStatusTimer = null;
+
+    // 是否正在填充表单（禁止触发保存）
+    let _populating = false;
+
+    // 翻译工具
+    const t = (key) => (window.i18n && window.i18n.t) ? window.i18n.t(key) : key;
+
     // ---------- 获取内核配置 ----------
     async function fetchConfig() {
         try {
-            const resp = await apiFetch('/configs');
+            const resp = await api.apiFetch('/configs');
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const data = await resp.json();
             currentConfig = typeof data === 'string' ? JSON.parse(data) : data;
@@ -54,35 +52,13 @@ window.Config = (function() {
         }
     }
 
-    // ---------- 获取代理设置 ----------
-    async function fetchProxySettings() {
-        try {
-            const resp = await apiFetch('/settings');
-            if (!resp.ok) return;
-            const data = await resp.json();
-            proxySettings = data;
-            if (document.getElementById('cfg-proxy-enabled')) {
-                document.getElementById('cfg-proxy-enabled').checked = proxySettings.enabled;
-                document.getElementById('cfg-proxy-url').value = proxySettings.url || '';
-                document.getElementById('cfg-token-enabled').checked = proxySettings.token_enabled;
-                document.getElementById('cfg-token').value = proxySettings.token || '';
-                document.getElementById('cfg-modify-config').checked = proxySettings.modify_config;
-                document.getElementById('cfg-config-backend-url').value = proxySettings.config_backend_url || '';
-                proxyToggleChanged();
-                tokenToggleChanged();
-                configToggleChanged();
-            }
-        } catch (e) {
-            console.error('获取代理设置失败:', e);
-        }
-    }
-
     // ---------- 收集内核配置表单值 ----------
     function collectCoreFormValues() {
         if (!currentConfig) return null;
         const tun = currentConfig.tun || {};
         return {
             'allow-lan': document.getElementById('cfg-allow-lan').checked,
+            'ipv6': document.getElementById('cfg-ipv6').checked,
             mode: document.getElementById('cfg-mode').value,
             'mixed-port': parseInt(document.getElementById('cfg-mixed-port').value) || 7890,
             port: parseInt(document.getElementById('cfg-http-port').value) || 0,
@@ -107,8 +83,19 @@ window.Config = (function() {
 
     // ---------- 保存内核配置（防抖） ----------
     function saveCoreDebounced() {
+        if (_populating) return; // 填充表单时禁止触发保存
         if (saveTimeout) clearTimeout(saveTimeout);
         saveTimeout = setTimeout(saveCore, 500);
+    }
+
+    // 立即保存（供弹窗使用）
+    async function saveCoreImmediate() {
+        if (_populating) return;
+        if (saveTimeout) {
+            clearTimeout(saveTimeout);
+            saveTimeout = null;
+        }
+        await saveCore();
     }
 
     async function saveCore() {
@@ -121,7 +108,7 @@ window.Config = (function() {
         isSaving = true;
 
         try {
-            const resp = await apiFetch('/configs', {
+            const resp = await api.apiFetch('/configs', {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
@@ -141,93 +128,131 @@ window.Config = (function() {
         }
     }
 
-    // ---------- 保存代理设置 ----------
-    async function saveProxySettings() {
-        const enabled = document.getElementById('cfg-proxy-enabled').checked;
-        const url = document.getElementById('cfg-proxy-url').value.trim();
-        const tokenEnabled = document.getElementById('cfg-token-enabled').checked;
-        const token = document.getElementById('cfg-token').value.trim();
-        const modifyConfig = document.getElementById('cfg-modify-config').checked;
-        const backendUrl = document.getElementById('cfg-config-backend-url').value.trim();
-
-        if (enabled && !url) { alert('请输入代理地址'); return; }
-        if (enabled && url && !/^https?:\/\//.test(url)) { alert('代理地址格式不正确'); return; }
-        if (modifyConfig && backendUrl && !/^https?:\/\//.test(backendUrl)) { alert('后端地址格式不正确'); return; }
-
+    // ---------- 内核状态 ----------
+    async function fetchCoreStatus() {
         try {
-            const resp = await apiFetch('/settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    enabled,
-                    url,
-                    token_enabled: tokenEnabled,
-                    token,
-                    modify_config: modifyConfig,
-                    config_backend_url: backendUrl
-                })
-            });
+            const resp = await api.apiFetch('/core/status');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            coreRunning = data.running === true;
+            updateCoreUI();
+        } catch (e) {
+            console.warn('[Config] 获取内核状态失败', e);
+        }
+    }
+
+    function updateCoreUI() {
+        const indicator = document.getElementById('core-status-indicator');
+        const text = document.getElementById('core-status-text');
+        if (indicator) {
+            indicator.style.background = coreRunning ? 'var(--success, #10b981)' : 'var(--danger, #ef4444)';
+        }
+        if (text) {
+            text.textContent = coreRunning ? t('config.core_running') : t('config.core_stopped');
+        }
+        const startBtn = document.getElementById('op-core-start');
+        const stopBtn = document.getElementById('op-core-stop');
+        if (startBtn) startBtn.disabled = coreRunning;
+        if (stopBtn) stopBtn.disabled = !coreRunning;
+    }
+
+    function startCoreStatusPolling() {
+        if (coreStatusTimer) clearInterval(coreStatusTimer);
+        fetchCoreStatus();
+        coreStatusTimer = setInterval(fetchCoreStatus, 5000);
+    }
+
+    function stopCoreStatusPolling() {
+        if (coreStatusTimer) {
+            clearInterval(coreStatusTimer);
+            coreStatusTimer = null;
+        }
+    }
+
+    async function startCore() {
+        try {
+            const resp = await api.apiFetch('/core/start', { method: 'POST' });
             const result = await resp.json();
-            if (resp.ok) {
-                alert(result.message || '代理设置已保存');
-                await fetchProxySettings();
+            if (resp.ok && result.status === 'ok') {
+                alert(t('config.core_start_success') || '内核启动成功');
+                await fetchCoreStatus();
             } else {
-                alert('保存失败: ' + (result.message || result.error || ''));
+                alert(t('config.core_start_failed') + ': ' + (result.message || result.error || ''));
             }
         } catch (e) {
-            alert('网络错误: ' + e.message);
+            alert(t('common.network_error') + ': ' + e.message);
+        }
+    }
+
+    async function stopCore() {
+        if (!confirm(t('config.confirm_stop_core') || '确定要停止内核吗？所有连接将断开。')) return;
+        try {
+            const resp = await api.apiFetch('/core/stop', { method: 'POST' });
+            const result = await resp.json();
+            if (resp.ok && result.status === 'ok') {
+                alert(t('config.core_stopped_success') || '内核已停止');
+                await fetchCoreStatus();
+            } else {
+                alert(t('config.core_stop_failed') + ': ' + (result.message || result.error || ''));
+            }
+        } catch (e) {
+            alert(t('common.network_error') + ': ' + e.message);
         }
     }
 
     // ---------- 操作按钮 ----------
-    // 热重载配置（不中断连接）
     async function reloadConfig() {
         try {
-            const resp = await apiFetch('/configs', { method: 'PUT' });
+            const resp = await api.apiFetch('/configs', { method: 'PUT' });
             if (resp.ok) {
                 await fetchConfig();
-                alert('配置已热重载');
+                alert(t('config.reload_success') || '配置已热重载');
             } else {
-                throw new Error('重载失败');
+                throw new Error(t('config.reload_failed') || '重载失败');
             }
         } catch (e) {
-            alert('重载失败: ' + e.message);
+            alert((t('config.reload_failed') || '重载失败') + ': ' + e.message);
         }
     }
 
-    // 真正重启内核（会断开所有连接）
     async function restartCore() {
-        if (!confirm(window.i18n?.t('config.confirm_restart') || '确定要重启内核吗？所有连接将断开。')) return;
+        if (!confirm(t('config.confirm_restart') || '确定要重启内核吗？所有连接将断开。')) return;
         try {
-            const resp = await apiFetch('/restart', { method: 'POST' });
-            if (!resp.ok) throw new Error('重启失败');
-            alert('重启指令已发送');
+            const resp = await api.apiFetch('/restart', { method: 'POST' });
+            if (!resp.ok) throw new Error(t('config.restart_failed') || '重启失败');
+            alert(t('config.restart_sent') || '重启指令已发送');
         } catch (e) {
-            alert('重启失败: ' + e.message);
+            alert((t('config.restart_failed') || '重启失败') + ': ' + e.message);
         }
     }
 
     async function flushFakeIP() {
         try {
-            await apiFetch('/cache/fakeip/flush', { method: 'POST' });
-            alert('FakeIP 缓存已清空');
-        } catch (e) { alert('操作失败: ' + e.message); }
+            await api.apiFetch('/cache/fakeip/flush', { method: 'POST' });
+            alert(t('config.flush_fakeip_success') || 'FakeIP 缓存已清空');
+        } catch (e) { alert((t('common.operation_failed') || '操作失败') + ': ' + e.message); }
     }
 
     async function flushDNSCache() {
         try {
-            await apiFetch('/cache/dns/flush', { method: 'POST' });
-            alert('DNS 缓存已清空');
-        } catch (e) { alert('操作失败: ' + e.message); }
+            await api.apiFetch('/cache/dns/flush', { method: 'POST' });
+            alert(t('config.flush_dns_success') || 'DNS 缓存已清空');
+        } catch (e) { alert((t('common.operation_failed') || '操作失败') + ': ' + e.message); }
     }
 
     async function updateGeoDB() {
         try {
-            await apiFetch('/providers/geo', { method: 'POST' });
-            alert('GEO 数据库更新请求已发送');
+            let resp = await api.apiFetch('/providers/geo', { method: 'POST' });
+            if (!resp.ok) {
+                resp = await api.apiFetch('/configs/geo', { method: 'POST' });
+            }
+            if (resp.ok) {
+                alert(t('config.update_geo_sent') || 'GEO 数据库更新请求已发送');
+            } else {
+                throw new Error(t('config.update_geo_failed') || '更新失败');
+            }
         } catch (e) {
-            await apiFetch('/configs/geo', { method: 'POST' }).catch(() => {});
-            alert('GEO 更新请求已发送');
+            alert((t('config.update_geo_failed') || '更新失败') + ': ' + e.message);
         }
     }
 
@@ -236,118 +261,197 @@ window.Config = (function() {
         const type = document.getElementById('dns-type').value;
         if (!domain) return;
         const resultDiv = document.getElementById('dns-result');
-        resultDiv.innerText = '查询中...';
+        resultDiv.innerText = t('config.dns_querying') || '查询中...';
         try {
-            const resp = await apiFetch(`/dns/query?name=${encodeURIComponent(domain)}&type=${type}`);
+            const resp = await api.apiFetch(`/dns/query?name=${encodeURIComponent(domain)}&type=${type}`);
             const data = await resp.json();
             if (data.Status === 0 && data.Answer) {
                 resultDiv.innerText = data.Answer.map(a => a.data).join('\n');
             } else {
-                resultDiv.innerText = '查询失败: ' + (data.message || '无记录');
+                resultDiv.innerText = (t('config.dns_query_failed') || '查询失败') + ': ' + (data.message || t('config.dns_no_record') || '无记录');
             }
         } catch (e) {
-            resultDiv.innerText = '查询失败: ' + e.message;
+            resultDiv.innerText = (t('config.dns_query_failed') || '查询失败') + ': ' + e.message;
         }
     }
 
-    // ---------- 代理开关联动 ----------
-    function proxyToggleChanged() {
-        const enabled = document.getElementById('cfg-proxy-enabled').checked;
-        document.getElementById('cfg-proxy-url').disabled = !enabled;
+    // ---------- 语言和主题切换（移动端专用） ----------
+    function updateLangButton() {
+        const btn = document.getElementById('config-lang-toggle');
+        if (!btn) return;
+        btn.textContent = t('config.lang_toggle');
     }
-    function tokenToggleChanged() {
-        const enabled = document.getElementById('cfg-token-enabled').checked;
-        document.getElementById('cfg-token').disabled = !enabled;
+
+    function updateThemeButton() {
+        const btn = document.getElementById('config-theme-toggle');
+        if (!btn) return;
+        btn.textContent = t('config.theme_toggle');
     }
-    function configToggleChanged() {
-        const enabled = document.getElementById('cfg-modify-config').checked;
-        document.getElementById('cfg-config-backend-url').disabled = !enabled;
+
+    function toggleLanguage() {
+        if (!window.i18n) return;
+        const newLang = window.i18n.getLanguage() === 'zh' ? 'en' : 'zh';
+        window.i18n.setLanguage(newLang);
+        window.dispatchEvent(new CustomEvent('languageChanged', { detail: { lang: newLang } }));
+        // 刷新当前配置页面以应用新语言
+        fetchConfig();
+        // 同时更新侧边栏语言指示（如有）
+        const langToggle = document.getElementById('langToggle');
+        if (langToggle) {
+            const span = langToggle.querySelector('#currentLang');
+            if (span) span.textContent = newLang === 'zh' ? '简' : 'EN';
+        }
+    }
+
+    function toggleTheme() {
+        const current = document.documentElement.getAttribute('data-theme');
+        const newTheme = current === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', newTheme);
+        localStorage.setItem('fluxor-theme', newTheme);
+        const moonIcon = document.querySelector('.icon-moon');
+        const sunIcon = document.querySelector('.icon-sun');
+        if (moonIcon && sunIcon) {
+            moonIcon.style.display = newTheme === 'dark' ? 'block' : 'none';
+            sunIcon.style.display = newTheme === 'dark' ? 'none' : 'block';
+        }
+        updateThemeButton();
+    }
+
+    // ---------- TUN 设置弹窗 ----------
+    function openTunModal() {
+        // 从主表单读取当前 TUN 值填充弹窗
+        document.getElementById('modal-tun-stack').value = document.getElementById('cfg-tun-stack').value || 'system';
+        document.getElementById('modal-tun-device').value = document.getElementById('cfg-tun-device').value || '';
+        document.getElementById('modal-tun-auto-route').checked = document.getElementById('cfg-tun-auto-route').checked || false;
+        document.getElementById('modal-tun-dns-hijack').value = document.getElementById('cfg-tun-dns-hijack').value || '';
+        document.getElementById('modal-tun-mtu').value = document.getElementById('cfg-tun-mtu').value || '';
+        document.getElementById('tun-modal').classList.add('active');
+    }
+
+    function closeTunModal() {
+        document.getElementById('tun-modal').classList.remove('active');
+    }
+
+    function saveTunModal() {
+        // 将弹窗中的值写回主表单（隐藏字段）
+        document.getElementById('cfg-tun-stack').value = document.getElementById('modal-tun-stack').value;
+        document.getElementById('cfg-tun-device').value = document.getElementById('modal-tun-device').value;
+        document.getElementById('cfg-tun-auto-route').checked = document.getElementById('modal-tun-auto-route').checked;
+        document.getElementById('cfg-tun-dns-hijack').value = document.getElementById('modal-tun-dns-hijack').value;
+        document.getElementById('cfg-tun-mtu').value = document.getElementById('modal-tun-mtu').value;
+        // 触发保存（立即保存）
+        saveCoreImmediate();
+        closeTunModal();
     }
 
     // ---------- 渲染界面 ----------
     function renderForm() {
         if (!container) return;
-        const t = (window.i18n && window.i18n.t) || (key => key);
         const tun = currentConfig?.tun || {};
         container.innerHTML = `
-            <div class="card">
-                <h3>${t('config.proxy_settings')}</h3>
-                <div class="config-row">
-                    <label>${t('config.enable_proxy')}</label>
-                    <label class="toggle-switch">
-                        <input type="checkbox" id="cfg-proxy-enabled">
-                        <span class="slider"></span>
-                    </label>
-                </div>
-                <div class="config-row">
-                    <label for="cfg-proxy-url">${t('config.proxy_url')}</label>
-                    <input type="text" id="cfg-proxy-url" placeholder="${t('config.proxy_url_placeholder')}" disabled>
-                </div>
-                <div class="config-row">
-                    <label>${t('config.enable_token')}</label>
-                    <label class="toggle-switch">
-                        <input type="checkbox" id="cfg-token-enabled">
-                        <span class="slider"></span>
-                    </label>
-                </div>
-                <div class="config-row">
-                    <label for="cfg-token">${t('config.github_token')}</label>
-                    <input type="password" id="cfg-token" placeholder="${t('config.token_placeholder')}" disabled>
-                    <a href="https://github.com/settings/personal-access-tokens" target="_blank" class="token-link">${t('config.token_link')}</a>
-                </div>
-                <div class="config-row">
-                    <label>${t('config.modify_metacubexd')}</label>
-                    <label class="toggle-switch">
-                        <input type="checkbox" id="cfg-modify-config">
-                        <span class="slider"></span>
-                    </label>
-                </div>
-                <div class="config-row">
-                    <label for="cfg-config-backend-url">${t('config.metacubexd_backend_url')}</label>
-                    <input type="text" id="cfg-config-backend-url" placeholder="${t('config.metacubexd_url_placeholder')}" disabled>
-                </div>
-                <button id="save-proxy" class="btn">${t('config.save_proxy')}</button>
-            </div>
-
+            <!-- 内核设置卡片 -->
             <div class="card">
                 <h3>${t('config.core_config')}</h3>
-                <div class="config-row"><label>${t('config.allow_lan')}</label><input type="checkbox" id="cfg-allow-lan"></div>
-                <div class="config-row"><label>${t('config.mode')}</label><select id="cfg-mode">
-                    <option value="rule">${t('config.mode_rule')}</option>
-                    <option value="global">${t('config.mode_global')}</option>
-                    <option value="direct">${t('config.mode_direct')}</option>
-                </select></div>
-                <div class="config-row"><label>${t('config.interface_name')}</label><input type="text" id="cfg-interface-name" placeholder="${t('config.interface_name_placeholder')}"></div>
-                <h4>${t('config.tun')}</h4>
-                <div class="config-row"><label>${t('config.tun_enable')}</label><input type="checkbox" id="cfg-tun-enable"></div>
-                <div class="config-row"><label>${t('config.tun_stack')}</label><select id="cfg-tun-stack">
-                    <option value="system">system</option>
-                    <option value="gvisor">gvisor</option>
-                    <option value="mixed">mixed</option>
-                </select></div>
-                <div class="config-row"><label>${t('config.tun_device')}</label><input type="text" id="cfg-tun-device" placeholder="${t('config.tun_device_auto')}"></div>
-                <div class="config-row"><label>${t('config.auto_route')}</label><input type="checkbox" id="cfg-tun-auto-route"></div>
-                <div class="config-row"><label>${t('config.dns_hijack')}</label><input type="text" id="cfg-tun-dns-hijack" placeholder="${t('config.dns_hijack_placeholder')}"></div>
-                <div class="config-row"><label>${t('config.mtu')}</label><input type="number" id="cfg-tun-mtu" placeholder="${t('config.mtu_default')}"></div>
-                <h4>${t('config.port_settings')}</h4>
-                <div class="config-row"><label>${t('config.mixed_port')}</label><input type="number" id="cfg-mixed-port"></div>
-                <div class="config-row"><label>${t('config.http_port')}</label><input type="number" id="cfg-http-port"></div>
-                <div class="config-row"><label>${t('config.socks_port')}</label><input type="number" id="cfg-socks-port"></div>
-                <div class="config-row"><label>${t('config.redir_port')}</label><input type="number" id="cfg-redir-port"></div>
-                <div class="config-row"><label>${t('config.tproxy_port')}</label><input type="number" id="cfg-tproxy-port"></div>
-            </div>
+                <div class="config-row">
+                    <label>${t('config.allow_lan')}</label>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="cfg-allow-lan">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+                <div class="config-row">
+                    <label>IPv6</label>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="cfg-ipv6">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+                <div class="config-row">
+                    <label>${t('config.mode')}</label>
+                    <select id="cfg-mode">
+                        <option value="rule">${t('config.mode_rule')}</option>
+                        <option value="global">${t('config.mode_global')}</option>
+                        <option value="direct">${t('config.mode_direct')}</option>
+                    </select>
+                </div>
+                <div class="config-row">
+                    <label>${t('config.interface_name')}</label>
+                    <input type="text" id="cfg-interface-name" placeholder="${t('config.interface_name_placeholder')}">
+                </div>
+                <div class="config-row">
+                    <label>${t('config.tun')}</label>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="cfg-tun-enable">
+                        <span class="slider"></span>
+                    </label>
+                    <button type="button" class="btn-icon" id="tun-gear" title="${t('config.tun_advanced_title')}" style="background:none;border:none;cursor:pointer;padding:0 4px;color:var(--text-secondary);">
+                        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="3"/>
+                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                        </svg>
+                    </button>
+                </div>
 
-            <div class="card">
-                <h3>${t('config.actions')}</h3>
-                <div class="button-group">
-                    <button id="op-reload" class="btn">${t('config.reload')}</button>
-                    <button id="op-restart" class="btn btn-danger">${t('config.restart')}</button>
-                    <button id="op-flush-fakeip" class="btn">${t('config.flush_fakeip')}</button>
-                    <button id="op-flush-dns" class="btn">${t('config.flush_dns')}</button>
-                    <button id="op-update-geo" class="btn">${t('config.update_geo')}</button>
+                <!-- 隐藏的 TUN 详细字段（用于存储值，不显示） -->
+                <div style="display:none;">
+                    <select id="cfg-tun-stack"><option value="system">system</option><option value="gvisor">gvisor</option><option value="mixed">mixed</option></select>
+                    <input type="text" id="cfg-tun-device">
+                    <input type="checkbox" id="cfg-tun-auto-route">
+                    <input type="text" id="cfg-tun-dns-hijack">
+                    <input type="number" id="cfg-tun-mtu">
+                </div>
+
+                <h4>${t('config.port_settings')}</h4>
+                <div class="config-row">
+                    <label>${t('config.mixed_port')}</label>
+                    <input type="number" id="cfg-mixed-port">
+                </div>
+                <div class="config-row">
+                    <label>${t('config.http_port')}</label>
+                    <input type="number" id="cfg-http-port">
+                </div>
+                <div class="config-row">
+                    <label>${t('config.socks_port')}</label>
+                    <input type="number" id="cfg-socks-port">
+                </div>
+                <div class="config-row">
+                    <label>${t('config.redir_port')}</label>
+                    <input type="number" id="cfg-redir-port">
+                </div>
+                <div class="config-row">
+                    <label>${t('config.tproxy_port')}</label>
+                    <input type="number" id="cfg-tproxy-port">
                 </div>
             </div>
 
+            <!-- 操作卡片 -->
+            <div class="card">
+                <h3>${t('config.actions')}</h3>
+                <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
+                    <span id="core-status-indicator" style="display:inline-block; width:12px; height:12px; border-radius:50%; background:var(--text-secondary);"></span>
+                    <span id="core-status-text" style="font-size:14px; color:var(--text-secondary);">${t('config.core_checking')}</span>
+                </div>
+                <div class="button-group">
+                    <button id="op-core-start" class="btn btn-success">▶ ${t('config.start_core')}</button>
+                    <button id="op-core-stop" class="btn btn-danger">⏹ ${t('config.stop_core')}</button>
+                    <button id="op-reload" class="btn btn-secondary">${t('config.reload')}</button>
+                    <button id="op-restart" class="btn btn-danger">${t('config.restart')}</button>
+                    <button id="op-flush-fakeip" class="btn btn-secondary">${t('config.flush_fakeip')}</button>
+                    <button id="op-flush-dns" class="btn btn-secondary">${t('config.flush_dns')}</button>
+                    <button id="op-update-geo" class="btn btn-secondary">${t('config.update_geo')}</button>
+                </div>
+            </div>
+
+            <!-- 界面设置卡片（移动端专用语言和主题切换） -->
+            <div class="card">
+                <h3>${t('config.interface_settings')}</h3>
+                <div style="display:flex; gap:12px; flex-wrap:wrap;">
+                    <button id="config-lang-toggle" class="btn" style="background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border-color);">${t('config.lang_toggle')}</button>
+                    <button id="config-theme-toggle" class="btn" style="background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border-color);">${t('config.theme_toggle')}</button>
+                </div>
+            </div>
+
+            <!-- DNS查询卡片 -->
             <div class="card">
                 <h3>${t('config.dns_query')}</h3>
                 <div class="dns-query-box">
@@ -362,25 +466,102 @@ window.Config = (function() {
                 </div>
                 <pre id="dns-result" class="dns-result-pre">${t('config.dns_result_default')}</pre>
             </div>
+
+            <!-- TUN 设置弹窗 -->
+            <div class="modal-overlay" id="tun-modal">
+                <div class="modal" style="max-width:480px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                        <h2 style="margin:0;">${t('config.tun_advanced_title')}</h2>
+                        <button type="button" class="modal-close" style="position:static;font-size:1.5em;background:none;border:none;cursor:pointer;color:var(--text-secondary);">&times;</button>
+                    </div>
+                    <div class="modal-section">
+                        <label>${t('config.tun_stack')}</label>
+                        <select id="modal-tun-stack">
+                            <option value="system">system</option>
+                            <option value="gvisor">gvisor</option>
+                            <option value="mixed">mixed</option>
+                        </select>
+                    </div>
+                    <div class="modal-section">
+                        <label>${t('config.tun_device')}</label>
+                        <input type="text" id="modal-tun-device" placeholder="${t('config.tun_device_auto')}">
+                    </div>
+                    <div class="modal-section">
+                        <label>${t('config.auto_route')}</label>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="modal-tun-auto-route">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="modal-section">
+                        <label>${t('config.dns_hijack')}</label>
+                        <input type="text" id="modal-tun-dns-hijack" placeholder="${t('config.dns_hijack_placeholder')}">
+                    </div>
+                    <div class="modal-section">
+                        <label>${t('config.mtu')}</label>
+                        <input type="number" id="modal-tun-mtu" placeholder="${t('config.mtu_default')}">
+                    </div>
+                    <div class="modal-actions">
+                        <button type="button" class="btn btn-cancel" id="tun-modal-cancel">${t('common.cancel')}</button>
+                        <button type="button" class="btn btn-primary" id="tun-modal-save">${t('common.save')}</button>
+                    </div>
+                </div>
+            </div>
         `;
 
         bindEvents();
-        fetchProxySettings();
+        populateForm();
+        startCoreStatusPolling();
+        updateLangButton();
+        updateThemeButton();
+    }
+
+    // 填充内核配置到表单（使用 _populating 标志防止触发保存）
+    function populateForm() {
+        if (!currentConfig) return;
+        _populating = true;
+        try {
+            const cfg = currentConfig;
+            const tun = cfg.tun || {};
+            document.getElementById('cfg-allow-lan').checked = cfg['allow-lan'] || false;
+            document.getElementById('cfg-ipv6').checked = cfg['ipv6'] || false;
+            document.getElementById('cfg-mode').value = cfg.mode || 'rule';
+            document.getElementById('cfg-interface-name').value = cfg['interface-name'] || '';
+            document.getElementById('cfg-tun-enable').checked = tun.enable || false;
+            // 隐藏字段
+            document.getElementById('cfg-tun-stack').value = tun.stack || 'system';
+            document.getElementById('cfg-tun-device').value = tun.device || '';
+            document.getElementById('cfg-tun-auto-route').checked = tun['auto-route'] || false;
+            document.getElementById('cfg-tun-dns-hijack').value = Array.isArray(tun['dns-hijack']) ? tun['dns-hijack'].join(', ') : '';
+            document.getElementById('cfg-tun-mtu').value = tun.mtu || '';
+            document.getElementById('cfg-mixed-port').value = cfg['mixed-port'] || '';
+            document.getElementById('cfg-http-port').value = cfg.port || '';
+            document.getElementById('cfg-socks-port').value = cfg['socks-port'] || '';
+            document.getElementById('cfg-redir-port').value = cfg['redir-port'] || '';
+            document.getElementById('cfg-tproxy-port').value = cfg['tproxy-port'] || '';
+        } finally {
+            _populating = false;
+        }
     }
 
     function bindEvents() {
-        // 自动保存
-        ['cfg-allow-lan', 'cfg-mode', 'cfg-interface-name', 'cfg-tun-enable', 'cfg-tun-stack', 'cfg-tun-device',
-         'cfg-tun-auto-route', 'cfg-tun-dns-hijack', 'cfg-tun-mtu', 'cfg-mixed-port', 'cfg-http-port',
-         'cfg-socks-port', 'cfg-redir-port', 'cfg-tproxy-port'].forEach(id => {
+        // 自动保存（仅对可见字段绑定，隐藏字段由弹窗控制）
+        ['cfg-allow-lan', 'cfg-ipv6', 'cfg-mode', 'cfg-interface-name', 
+         'cfg-mixed-port', 'cfg-http-port', 'cfg-socks-port', 'cfg-redir-port', 'cfg-tproxy-port',
+         'cfg-tun-enable' // TUN 开关也保留
+        ].forEach(id => {
             const el = document.getElementById(id);
             if (el) {
                 el.addEventListener('change', saveCoreDebounced);
-                if (el.tagName === 'INPUT' && el.type !== 'checkbox') el.addEventListener('input', saveCoreDebounced);
+                if (el.tagName === 'INPUT' && el.type !== 'checkbox') {
+                    el.addEventListener('input', saveCoreDebounced);
+                }
             }
         });
 
         // 操作按钮
+        document.getElementById('op-core-start').onclick = startCore;
+        document.getElementById('op-core-stop').onclick = stopCore;
         document.getElementById('op-reload').onclick = reloadConfig;
         document.getElementById('op-restart').onclick = restartCore;
         document.getElementById('op-flush-fakeip').onclick = flushFakeIP;
@@ -388,18 +569,30 @@ window.Config = (function() {
         document.getElementById('op-update-geo').onclick = updateGeoDB;
         document.getElementById('dns-query').onclick = dnsQuery;
 
-        // 代理保存
-        document.getElementById('save-proxy').onclick = saveProxySettings;
+        // 语言和主题切换
+        document.getElementById('config-lang-toggle').addEventListener('click', toggleLanguage);
+        document.getElementById('config-theme-toggle').addEventListener('click', toggleTheme);
 
-        // 代理开关
-        document.getElementById('cfg-proxy-enabled').addEventListener('change', proxyToggleChanged);
-        document.getElementById('cfg-token-enabled').addEventListener('change', tokenToggleChanged);
-        document.getElementById('cfg-modify-config').addEventListener('change', configToggleChanged);
-    }
+        // TUN 齿轮按钮
+        const gearBtn = document.getElementById('tun-gear');
+        if (gearBtn) gearBtn.addEventListener('click', openTunModal);
 
-    function escapeHtml(str) {
-        if (!str) return '';
-        return String(str).replace(/[&<>]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
+        // TUN 弹窗事件
+        const modal = document.getElementById('tun-modal');
+        if (modal) {
+            const closeBtn = modal.querySelector('.modal-close');
+            const cancelBtn = document.getElementById('tun-modal-cancel');
+            const saveBtn = document.getElementById('tun-modal-save');
+            if (closeBtn) closeBtn.addEventListener('click', closeTunModal);
+            if (cancelBtn) cancelBtn.addEventListener('click', closeTunModal);
+            if (saveBtn) saveBtn.addEventListener('click', saveTunModal);
+            modal.addEventListener('click', function(e) {
+                if (e.target === this) closeTunModal();
+            });
+        }
+
+        // 监听全局语言变化事件，更新按钮文字
+        window.addEventListener('languageChanged', updateLangButton);
     }
 
     async function init() {
@@ -411,6 +604,8 @@ window.Config = (function() {
     function destroy() {
         if (saveTimeout) clearTimeout(saveTimeout);
         if (abortController) abortController.abort();
+        stopCoreStatusPolling();
+        window.removeEventListener('languageChanged', updateLangButton);
     }
 
     return { init, destroy };

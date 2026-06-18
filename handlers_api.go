@@ -10,14 +10,8 @@ import (
 
 // handleVersion 返回内核版本信息（代理 /version）
 func handleVersion(w http.ResponseWriter, r *http.Request) {
-	if coreLogger != nil {
-		coreLogger.Println("[API] 获取内核版本")
-	}
 	resp, err := coreRequest("GET", "/version", nil)
 	if err != nil {
-		if coreLogger != nil {
-			coreLogger.Printf("[API][ERROR] 获取版本信息失败: %v\n", err)
-		}
 		writeJSONError(w, http.StatusBadGateway, "无法获取内核版本: "+err.Error())
 		return
 	}
@@ -28,14 +22,8 @@ func handleVersion(w http.ResponseWriter, r *http.Request) {
 
 // handleTraffic 返回实时流量信息（代理 /traffic）
 func handleTraffic(w http.ResponseWriter, r *http.Request) {
-	if coreLogger != nil {
-		coreLogger.Println("[API] 获取流量信息")
-	}
 	resp, err := coreRequest("GET", "/traffic", nil)
 	if err != nil {
-		if coreLogger != nil {
-			coreLogger.Printf("[API][ERROR] 获取流量信息失败: %v\n", err)
-		}
 		writeJSONError(w, http.StatusBadGateway, "无法获取流量信息: "+err.Error())
 		return
 	}
@@ -46,14 +34,8 @@ func handleTraffic(w http.ResponseWriter, r *http.Request) {
 
 // handleMemory 返回内存使用信息（代理 /memory）
 func handleMemory(w http.ResponseWriter, r *http.Request) {
-	if coreLogger != nil {
-		coreLogger.Println("[API] 获取内存信息")
-	}
 	resp, err := coreRequest("GET", "/memory", nil)
 	if err != nil {
-		if coreLogger != nil {
-			coreLogger.Printf("[API][ERROR] 获取内存信息失败: %v\n", err)
-		}
 		writeJSONError(w, http.StatusBadGateway, "无法获取内存信息: "+err.Error())
 		return
 	}
@@ -64,14 +46,8 @@ func handleMemory(w http.ResponseWriter, r *http.Request) {
 
 // handleConnections 返回连接信息（代理 /connections）
 func handleConnections(w http.ResponseWriter, r *http.Request) {
-	if coreLogger != nil {
-		coreLogger.Println("[API] 获取连接信息")
-	}
 	resp, err := coreRequest("GET", "/connections", nil)
 	if err != nil {
-		if coreLogger != nil {
-			coreLogger.Printf("[API][ERROR] 获取连接信息失败: %v\n", err)
-		}
 		writeJSONError(w, http.StatusBadGateway, "无法获取连接信息: "+err.Error())
 		return
 	}
@@ -86,15 +62,8 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 func handleConfigsAPI(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		// 代理内核 GET /configs 获取运行时配置
-		if coreLogger != nil {
-			coreLogger.Println("[API] 获取配置信息")
-		}
 		resp, err := coreRequest("GET", "/configs", nil)
 		if err != nil {
-			if coreLogger != nil {
-				coreLogger.Printf("[API][ERROR] 获取配置失败: %v\n", err)
-			}
 			writeJSONError(w, http.StatusBadGateway, "获取配置失败: "+err.Error())
 			return
 		}
@@ -103,15 +72,8 @@ func handleConfigsAPI(w http.ResponseWriter, r *http.Request) {
 		io.Copy(w, resp.Body)
 
 	case http.MethodPatch:
-		// 代理内核 PATCH /configs 更新配置
-		if coreLogger != nil {
-			coreLogger.Println("[API] 修改配置信息")
-		}
 		resp, err := coreRequest("PATCH", "/configs", r.Body)
 		if err != nil {
-			if coreLogger != nil {
-				coreLogger.Printf("[API][ERROR] 修改配置失败: %v\n", err)
-			}
 			writeJSONError(w, http.StatusBadGateway, "修改配置失败: "+err.Error())
 			return
 		}
@@ -120,14 +82,7 @@ func handleConfigsAPI(w http.ResponseWriter, r *http.Request) {
 		io.Copy(w, resp.Body)
 
 	case http.MethodPut:
-		// 热重载：PUT /configs?force=true
-		if coreLogger != nil {
-			coreLogger.Println("[API] 重载配置信息")
-		}
 		if err := reloadCore(); err != nil {
-			if coreLogger != nil {
-				coreLogger.Printf("[API][ERROR] 重载配置失败: %v\n", err)
-			}
 			writeJSONError(w, http.StatusInternalServerError, "重载配置失败: "+err.Error())
 			return
 		}
@@ -144,14 +99,8 @@ func handleRestart(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
 		return
 	}
-	if coreLogger != nil {
-		coreLogger.Println("[API] 收到内核重启请求")
-	}
 	resp, err := coreRequest("POST", "/restart", strings.NewReader(`{"path": "", "payload": ""}`))
 	if err != nil {
-		if coreLogger != nil {
-			coreLogger.Printf("[API][ERROR] 重启内核失败: %v\n", err)
-		}
 		writeJSONError(w, http.StatusBadGateway, "重启内核失败: "+err.Error())
 		return
 	}
@@ -162,14 +111,8 @@ func handleRestart(w http.ResponseWriter, r *http.Request) {
 
 // handleConfigsGeo 更新 GEO 数据库（POST /configs/geo）
 func handleConfigsGeo(w http.ResponseWriter, r *http.Request) {
-	if coreLogger != nil {
-		coreLogger.Println("[API] 更新 GEO 数据库")
-	}
 	resp, err := coreRequest("POST", "/configs/geo", nil)
 	if err != nil {
-		if coreLogger != nil {
-			coreLogger.Printf("[API][ERROR] 更新 GEO 失败: %v\n", err)
-		}
 		writeJSONError(w, http.StatusBadGateway, "更新 GEO 失败: "+err.Error())
 		return
 	}
@@ -179,14 +122,8 @@ func handleConfigsGeo(w http.ResponseWriter, r *http.Request) {
 
 // handleProvidersGeo 更新 GEO 数据库（回退接口，POST /providers/geo）
 func handleProvidersGeo(w http.ResponseWriter, r *http.Request) {
-	if coreLogger != nil {
-		coreLogger.Println("[API] 更新 GEO 数据库（回退接口）")
-	}
 	resp, err := coreRequest("POST", "/providers/geo", nil)
 	if err != nil {
-		if coreLogger != nil {
-			coreLogger.Printf("[API][ERROR] 更新 GEO 失败: %v\n", err)
-		}
 		writeJSONError(w, http.StatusBadGateway, "更新 GEO 失败: "+err.Error())
 		return
 	}
@@ -196,14 +133,8 @@ func handleProvidersGeo(w http.ResponseWriter, r *http.Request) {
 
 // handleFlushFakeIP 清空 FakeIP 缓存（POST /cache/fakeip/flush）
 func handleFlushFakeIP(w http.ResponseWriter, r *http.Request) {
-	if coreLogger != nil {
-		coreLogger.Println("[API] 清空 FakeIP 缓存")
-	}
 	resp, err := coreRequest("POST", "/cache/fakeip/flush", nil)
 	if err != nil {
-		if coreLogger != nil {
-			coreLogger.Printf("[API][ERROR] 清空 FakeIP 失败: %v\n", err)
-		}
 		writeJSONError(w, http.StatusBadGateway, "清空 FakeIP 失败: "+err.Error())
 		return
 	}
@@ -213,14 +144,8 @@ func handleFlushFakeIP(w http.ResponseWriter, r *http.Request) {
 
 // handleFlushDNS 清空 DNS 缓存（POST /cache/dns/flush）
 func handleFlushDNS(w http.ResponseWriter, r *http.Request) {
-	if coreLogger != nil {
-		coreLogger.Println("[API] 清空 DNS 缓存")
-	}
 	resp, err := coreRequest("POST", "/cache/dns/flush", nil)
 	if err != nil {
-		if coreLogger != nil {
-			coreLogger.Printf("[API][ERROR] 清空 DNS 缓存失败: %v\n", err)
-		}
 		writeJSONError(w, http.StatusBadGateway, "清空 DNS 缓存失败: "+err.Error())
 		return
 	}
@@ -232,15 +157,9 @@ func handleFlushDNS(w http.ResponseWriter, r *http.Request) {
 func handleDNSQuery(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	qtype := r.URL.Query().Get("type")
-	if coreLogger != nil {
-		coreLogger.Printf("[API] DNS 查询: name=%s, type=%s\n", name, qtype)
-	}
 	path := "/dns/query?name=" + name + "&type=" + qtype
 	resp, err := coreRequest("GET", path, nil)
 	if err != nil {
-		if coreLogger != nil {
-			coreLogger.Printf("[API][ERROR] DNS 查询失败: %v\n", err)
-		}
 		writeJSONError(w, http.StatusBadGateway, "DNS 查询失败: "+err.Error())
 		return
 	}
@@ -249,39 +168,172 @@ func handleDNSQuery(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, resp.Body)
 }
 
-// handleConnectionsClose 关闭单个连接或所有连接（DELETE /connections 或 /connections/:id）
+// handleConnectionsClose 关闭单个连接或所有连接（DELETE /connections 或 /connections/{id}）
 func handleConnectionsClose(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// 从 URL 提取连接 ID（可选）
-	id := r.URL.Query().Get("id")
-	if coreLogger != nil {
-		if id != "" {
-			coreLogger.Printf("[API] 关闭连接: %s\n", id)
-		} else {
-			coreLogger.Println("[API] 关闭所有连接")
-		}
+	// 从路径中提取 ID（支持 /connections 和 /connections/xxx）
+	path := strings.TrimPrefix(r.URL.Path, baseURL+"/connections")
+	var id string
+	if path != "" && path != "/" {
+		id = strings.TrimPrefix(path, "/")
 	}
 
-	// 调用内核 API 关闭连接
-	var path string
+	var targetPath string
 	if id != "" {
-		path = "/connections?id=" + id
+		targetPath = "/connections/" + id
 	} else {
-		path = "/connections"
+		targetPath = "/connections"
 	}
 
-	resp, err := coreRequest("DELETE", path, nil)
+	resp, err := coreRequest("DELETE", targetPath, nil)
 	if err != nil {
-		if coreLogger != nil {
-			coreLogger.Printf("[API][ERROR] 关闭连接失败: %v\n", err)
-		}
 		writeJSONError(w, http.StatusBadGateway, "关闭连接失败: "+err.Error())
 		return
 	}
 	defer resp.Body.Close()
 	w.WriteHeader(resp.StatusCode)
+}
+
+// handleProxies 获取所有代理组信息（代理 GET /proxies）
+func handleProxies(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	resp, err := coreRequest("GET", "/proxies", nil)
+	if err != nil {
+		writeJSONError(w, http.StatusBadGateway, "获取代理列表失败: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json")
+	io.Copy(w, resp.Body)
+}
+
+// handleProxyDelay 测速（GET /proxies/{name}/delay）
+func handleProxyDelay(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	path := r.URL.Path
+	trimmed := strings.TrimPrefix(path, baseURL+"/proxies/")
+	parts := strings.Split(trimmed, "/")
+	if len(parts) != 2 || parts[1] != "delay" {
+		writeJSONError(w, http.StatusBadRequest, "无效的请求路径")
+		return
+	}
+	proxyName := parts[0]
+	targetPath := "/proxies/" + proxyName + "/delay?" + r.URL.RawQuery
+	resp, err := coreRequest("GET", targetPath, nil)
+	if err != nil {
+		writeJSONError(w, http.StatusBadGateway, "测速失败: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json")
+	io.Copy(w, resp.Body)
+}
+
+// handleProxySwitch 切换代理选择（PUT /proxies/{name}）
+func handleProxySwitch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	path := r.URL.Path
+	trimmed := strings.TrimPrefix(path, baseURL+"/proxies/")
+	if trimmed == "" || strings.Contains(trimmed, "/") {
+		writeJSONError(w, http.StatusBadRequest, "无效的代理名称")
+		return
+	}
+	proxyName := trimmed
+	resp, err := coreRequest("PUT", "/proxies/"+proxyName, r.Body)
+	if err != nil {
+		writeJSONError(w, http.StatusBadGateway, "切换代理失败: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
+// ---------- 规则相关 API ----------
+
+// handleRules 获取所有规则（代理 GET /rules）
+func handleRules(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	resp, err := coreRequest("GET", "/rules", nil)
+	if err != nil {
+		writeJSONError(w, http.StatusBadGateway, "获取规则列表失败: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json")
+	io.Copy(w, resp.Body)
+}
+
+// handleRuleProviders 获取规则提供商（代理 GET /providers/rules）
+func handleRuleProviders(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	resp, err := coreRequest("GET", "/providers/rules", nil)
+	if err != nil {
+		writeJSONError(w, http.StatusBadGateway, "获取规则提供商失败: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json")
+	io.Copy(w, resp.Body)
+}
+
+// handleUpdateRuleProvider 更新规则提供商（PUT /providers/rules/{name}）
+func handleUpdateRuleProvider(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	path := r.URL.Path
+	// 使用 baseURL + "/providers/rules/" 作为前缀
+	trimmed := strings.TrimPrefix(path, baseURL+"/providers/rules/")
+	if trimmed == "" || strings.Contains(trimmed, "/") {
+		writeJSONError(w, http.StatusBadRequest, "无效的提供商名称")
+		return
+	}
+	providerName := trimmed
+	targetPath := "/providers/rules/" + providerName
+	resp, err := coreRequest("PUT", targetPath, r.Body)
+	if err != nil {
+		writeJSONError(w, http.StatusBadGateway, "更新规则提供商失败: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
+// handleRulesDisable 禁用/启用规则（代理 PATCH /rules/disable）
+func handleRulesDisable(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	resp, err := coreRequest("PATCH", "/rules/disable", r.Body)
+	if err != nil {
+		writeJSONError(w, http.StatusBadGateway, "规则禁用/启用失败: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }

@@ -1,20 +1,17 @@
-// 规则模块：虚拟滚动 + 并发提供商更新 + 搜索过滤（支持中英文）
+// 规则模块：规则列表和规则提供商管理（支持切换视图）
 window.Rules = (function() {
     let container = null;
     let allRules = [];
-    let providers = {};
+    let allProviders = [];
     let filterText = '';
     let langEventListener = null;
+    let currentView = 'rules'; // 'rules' | 'providers'
 
-    // 虚拟滚动状态
-    const ROW_HEIGHT = 40;
-    const BUFFER_SIZE = 10;
-    let visibleStart = 0;
-    let visibleEnd = 0;
-    let filteredRules = [];
-    let listContainer = null;
-    let scrollSpacer = null;
-    let viewport = null;
+    const BASE = window.BASE_URL || '';
+    function withBase(path) {
+        if (!BASE || BASE === '/') return path;
+        return BASE.replace(/\/$/, '') + '/' + path.replace(/^\//, '');
+    }
 
     function t(key) {
         return (window.i18n && window.i18n.t) ? window.i18n.t(key) : key;
@@ -27,177 +24,318 @@ window.Rules = (function() {
         })[m]);
     }
 
+    // 格式化时间
+    function formatTime(isoString) {
+        if (!isoString) return '-';
+        try {
+            const date = new Date(isoString);
+            if (isNaN(date.getTime())) return isoString;
+            return date.toLocaleString();
+        } catch (_) {
+            return isoString;
+        }
+    }
+
     // ==================== 数据获取 ====================
+    async function fetchProviders() {
+        try {
+            const resp = await window.API.apiFetch('/providers/rules');
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+            const providersObj = data.providers || {};
+            allProviders = Object.keys(providersObj).map(name => ({
+                name: name,
+                ...providersObj[name]
+            }));
+        } catch (err) {
+            console.error('[Rules] 加载提供商失败:', err);
+            allProviders = [];
+        }
+        if (currentView === 'providers') {
+            renderProvidersTable();
+            // 更新计数
+            updateProviderCount();
+        }
+    }
+
     async function fetchRules() {
         try {
             const resp = await window.API.apiFetch('/rules');
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const data = await resp.json();
             allRules = data.rules || [];
-            console.log('[Rules] 加载规则数:', allRules.length);
-            applyFilter();
+            allRules.forEach((rule, idx) => {
+                rule.index = idx;
+                rule.enabled = !(rule.extra?.disabled === true);
+            });
+            if (currentView === 'rules') renderRules();
         } catch (err) {
             console.error('[Rules] 加载规则失败:', err);
-            showError(t('rules.load_failed') + ': ' + err.message);
+            showToast(t('rules.load_failed') + ': ' + err.message, 'error');
+            allRules = [];
+            if (currentView === 'rules') renderRules();
         }
     }
 
-    async function fetchProviders() {
+    // ==================== 更新单个提供商 ====================
+    async function updateProvider(providerName) {
+        if (!providerName) {
+            showToast('提供商名称无效', 'error');
+            return;
+        }
+
+        const toastMsg = (key, fallback) => t(key) || fallback;
+        showToast(
+            toastMsg('rules.updating_provider', '正在更新 {name}...').replace('{name}', providerName),
+            'info'
+        );
+
         try {
-            const resp = await window.API.apiFetch('/providers/rules');
-            if (!resp.ok) return;
-            const data = await resp.json();
-            providers = data.providers || {};
-            console.log('[Rules] 加载提供商数:', Object.keys(providers).length);
-            renderProviders();
-        } catch (err) {
-            console.warn('[Rules] 规则提供商加载失败', err);
-        }
-    }
+            const encodedName = encodeURIComponent(providerName);
+            const url = withBase(`/providers/rules/${encodedName}`);
+            const updateResp = await fetch(url, {
+                method: 'PUT',
+            });
 
-    // ==================== 过滤与虚拟滚动核心 ====================
-    function applyFilter() {
-        if (!filterText) {
-            filteredRules = allRules;
-        } else {
-            const lower = filterText.toLowerCase();
-            filteredRules = allRules.filter(rule =>
-                rule.type?.toLowerCase().includes(lower) ||
-                rule.payload?.toLowerCase().includes(lower) ||
-                rule.proxy?.toLowerCase().includes(lower)
+            if (updateResp.ok) {
+                showToast(
+                    toastMsg('rules.provider_update_success', '{name} 更新成功').replace('{name}', providerName),
+                    'success'
+                );
+                await fetchProviders();
+                if (currentView === 'rules') await fetchRules();
+            } else {
+                let errMsg = `HTTP ${updateResp.status}`;
+                try {
+                    const errData = await updateResp.json();
+                    errMsg = errData.message || errData.error || errMsg;
+                } catch (_) {
+                    const text = await updateResp.text();
+                    if (text) errMsg = text;
+                }
+                console.error(`[Rules] 更新失败响应:`, errMsg);
+                throw new Error(errMsg);
+            }
+        } catch (err) {
+            console.error(`[Rules] 更新提供商 ${providerName} 失败:`, err);
+            showToast(
+                toastMsg('rules.provider_update_failed', '{name} 更新失败').replace('{name}', providerName) + ': ' + err.message,
+                'error'
             );
         }
-        const countEl = document.getElementById('rules-count');
-        if (countEl) countEl.innerText = filteredRules.length;
-        if (viewport) viewport.scrollTop = 0;
-        updateVisibleRange();
     }
 
-    function updateVisibleRange() {
-        if (!viewport || !scrollSpacer || !listContainer) return;
-
-        const scrollTop = viewport.scrollTop;
-        const viewHeight = viewport.clientHeight;
-        const totalHeight = filteredRules.length * ROW_HEIGHT;
-
-        scrollSpacer.style.height = totalHeight + 'px';
-
-        const newStart = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - BUFFER_SIZE);
-        const newEnd = Math.min(filteredRules.length, Math.ceil((scrollTop + viewHeight) / ROW_HEIGHT) + BUFFER_SIZE);
-
-        if (newStart !== visibleStart || newEnd !== visibleEnd) {
-            visibleStart = newStart;
-            visibleEnd = newEnd;
-            renderVisibleRows();
+    // ==================== 更新全部提供商 ====================
+    async function updateAllProviders() {
+        if (allProviders.length === 0) {
+            showToast(t('rules.no_providers') || '没有规则提供商', 'info');
+            return;
         }
+
+        showToast(
+            (t('rules.updating_providers') || '正在更新 {count} 个提供商...').replace('{count}', allProviders.length),
+            'info'
+        );
+
+        let successCount = 0;
+        let failCount = 0;
+        const errors = [];
+
+        const updatePromises = allProviders.map(async (provider) => {
+            const providerName = provider.name;
+            if (!providerName) {
+                failCount++;
+                errors.push('未知提供商名称');
+                return;
+            }
+
+            try {
+                const url = withBase(`/providers/rules/${encodeURIComponent(providerName)}`);
+                const updateResp = await fetch(url, {
+                    method: 'PUT',
+                });
+
+                if (updateResp.ok) {
+                    successCount++;
+                } else {
+                    let errMsg = `HTTP ${updateResp.status}`;
+                    try {
+                        const errData = await updateResp.json();
+                        errMsg = errData.message || errData.error || errMsg;
+                    } catch (_) {
+                        const text = await updateResp.text();
+                        if (text) errMsg = text;
+                    }
+                    failCount++;
+                    errors.push(`${providerName}: ${errMsg}`);
+                }
+            } catch (err) {
+                failCount++;
+                errors.push(`${providerName}: ${err.message}`);
+            }
+        });
+
+        await Promise.all(updatePromises);
+
+        if (failCount === 0) {
+            showToast(
+                (t('rules.batch_update_complete') || '批量更新完成') + `: ${successCount} 成功`,
+                'success'
+            );
+        } else {
+            const detail = errors.slice(0, 5).join('; ');
+            const msg = (t('rules.batch_update_partial') || '更新完成: {success} 成功, {fail} 失败')
+                .replace('{success}', successCount)
+                .replace('{fail}', failCount);
+            showToast(msg, 'warning');
+            console.warn('[Rules] 更新详情:', detail);
+        }
+
+        await fetchProviders();
+        if (currentView === 'rules') await fetchRules();
     }
 
-    function renderVisibleRows() {
-        if (!listContainer) return;
+    // ==================== 更新计数 ====================
+    function updateProviderCount() {
+        const countEl = document.getElementById('providers-count');
+        if (countEl) countEl.textContent = allProviders.length;
+    }
+
+    // ==================== 渲染提供商表格 ====================
+    function renderProvidersTable() {
+        const tbody = document.getElementById('providers-tbody');
+        if (!tbody) return;
+
+        tbody.innerHTML = '';
         const fragment = document.createDocumentFragment();
 
-        for (let i = visibleStart; i < visibleEnd; i++) {
-            const rule = filteredRules[i];
+        if (allProviders.length === 0) {
             const tr = document.createElement('tr');
-            tr.style.height = ROW_HEIGHT + 'px';
+            tr.innerHTML = `<td colspan="5" style="text-align:center;padding:40px;color:var(--text-secondary);">${t('rules.no_providers') || '没有规则提供商'}</td>`;
+            fragment.appendChild(tr);
+        } else {
+            for (const provider of allProviders) {
+                const tr = document.createElement('tr');
+                const name = provider.name || 'Unknown';
+                const type = provider.type || provider.behavior || '-';
+                const ruleCount = provider.ruleCount || provider.rule_count || 0;
+                const updatedAt = provider.updatedAt || provider.updated_at || '';
+                const timeStr = formatTime(updatedAt);
+                tr.innerHTML = `
+                    <td class="provider-name-cell" title="${escapeHtml(name)}">${escapeHtml(name)}</td>
+                    <td class="provider-type-cell">${escapeHtml(type)}</td>
+                    <td class="provider-rule-count-cell">${ruleCount}</td>
+                    <td class="provider-time-cell" title="${escapeHtml(updatedAt)}">${escapeHtml(timeStr)}</td>
+                    <td class="provider-action-cell">
+                        <button class="btn btn-icon provider-update-btn" data-provider="${encodeURIComponent(name)}" title="${t('rules.update_provider')}">
+                            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="23 4 23 10 17 10"/>
+                                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                            </svg>
+                        </button>
+                    </td>
+                `;
+                fragment.appendChild(tr);
+            }
+        }
+
+        tbody.appendChild(fragment);
+
+        tbody.querySelectorAll('.provider-update-btn').forEach(btn => {
+            btn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                const encodedName = this.dataset.provider;
+                if (encodedName) {
+                    const name = decodeURIComponent(encodedName);
+                    updateProvider(name);
+                }
+            });
+        });
+
+        // 更新计数
+        updateProviderCount();
+    }
+
+    // ==================== 渲染规则列表 ====================
+    function renderRules() {
+        const tbody = document.getElementById('rules-tbody');
+        if (!tbody) return;
+
+        let displayRules = allRules;
+        if (filterText) {
+            const lower = filterText.toLowerCase();
+            displayRules = allRules.filter(rule =>
+                (rule.payload || '').toLowerCase().includes(lower) ||
+                (rule.proxy || '').toLowerCase().includes(lower)
+            );
+        }
+
+        const countEl = document.getElementById('rules-count');
+        if (countEl) countEl.innerText = displayRules.length;
+
+        tbody.innerHTML = '';
+        const fragment = document.createDocumentFragment();
+
+        for (const rule of displayRules) {
+            const tr = document.createElement('tr');
+            const isEnabled = rule.enabled !== false;
             tr.innerHTML = `
-                <td class="rule-type"><span class="type-badge" title="${escapeHtml(rule.type || '-')}">${escapeHtml(rule.type || '-')}</span></td>
+                <td class="rule-enabled" style="text-align:center;width:60px;">
+                    <label class="toggle-switch" style="width:36px;height:20px;">
+                        <input type="checkbox" class="rule-toggle" data-index="${rule.index}" ${isEnabled ? 'checked' : ''}>
+                        <span class="slider" style="height:20px;width:36px;"></span>
+                    </label>
+                </td>
                 <td class="rule-payload" title="${escapeHtml(rule.payload || '')}">${escapeHtml(rule.payload || '-')}</td>
                 <td class="rule-proxy" title="${escapeHtml(rule.proxy || '')}">${escapeHtml(rule.proxy || '-')}</td>
             `;
+            const toggle = tr.querySelector('.rule-toggle');
+            toggle.addEventListener('change', function(e) {
+                e.stopPropagation();
+                const index = parseInt(this.dataset.index);
+                const ruleData = allRules.find(r => r.index === index);
+                if (!ruleData) return;
+                const oldEnabled = ruleData.enabled;
+                toggleRule(index, oldEnabled);
+            });
+
             fragment.appendChild(tr);
         }
 
-        listContainer.innerHTML = '';
-        listContainer.style.paddingTop = (visibleStart * ROW_HEIGHT) + 'px';
-        listContainer.appendChild(fragment);
+        tbody.appendChild(fragment);
     }
 
-    // ==================== 提供商管理（并发更新） ====================
-    async function updateProvider(name, btn) {
-        if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
+    // ==================== 规则启用/禁用 ====================
+    async function toggleRule(index, currentEnabled) {
+        const rule = allRules.find(r => r.index === index);
+        if (rule) {
+            rule.enabled = !currentEnabled;
+        }
+        renderRules();
+
         try {
-            const resp = await window.API.apiFetch(`/providers/rules/${encodeURIComponent(name)}`, { method: 'PUT' });
-            if (!resp.ok) throw new Error(await resp.text());
-            showToast(t('rules.provider_update_success').replace('{name}', name), 'success');
-            await fetchProviders();
-        } catch (err) {
-            console.error('[Rules] 更新提供商失败:', name, err);
-            showToast(t('rules.provider_update_failed').replace('{name}', name) + ': ' + err.message, 'error');
-        } finally {
-            if (btn) { btn.disabled = false; btn.textContent = '🔄'; }
-        }
-    }
-
-    async function updateAllProviders() {
-        const names = Object.keys(providers);
-        if (names.length === 0) {
-            showToast(t('rules.no_providers'), 'info');
-            return;
-        }
-        showToast(t('rules.updating_providers').replace('{count}', names.length), 'info');
-        const btns = document.querySelectorAll('.update-provider');
-        const btnMap = {};
-        btns.forEach(b => btnMap[b.dataset.provider] = b);
-
-        const concurrency = 5;
-        for (let i = 0; i < names.length; i += concurrency) {
-            const batch = names.slice(i, i + concurrency);
-            await Promise.allSettled(
-                batch.map(name => updateProvider(name, btnMap[name]))
-            );
-        }
-        showToast(t('rules.batch_update_complete'), 'success');
-    }
-
-    // ==================== UI 渲染 ====================
-    function renderProviders() {
-        const el = document.getElementById('providers-list');
-        if (!el) return;
-        const entries = Object.entries(providers);
-        if (entries.length === 0) {
-            el.innerHTML = `<div class="empty-state"><p>${t('rules.no_providers')}</p></div>`;
-            return;
-        }
-        el.innerHTML = entries.map(([name, p]) => {
-            const count = p.ruleCount ?? p.rules?.length ?? 0;
-            const time = p.updatedAt ? new Date(p.updatedAt).toLocaleString() : t('rules.unknown_time');
-            const behavior = p.behavior ? ` · ${p.behavior}` : '';
-            return `
-                <div class="provider-card">
-                    <div class="provider-info">
-                        <div class="provider-header">
-                            <strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong>
-                            <button class="update-provider" data-provider="${escapeHtml(name)}" title="${t('rules.update_provider')}">🔄</button>
-                        </div>
-                        <div class="provider-meta">
-                            <span class="meta-item">📋 ${count} ${t('rules.rules_count')}</span>
-                            ${behavior ? `<span class="meta-item">🏷️ ${behavior}</span>` : ''}
-                        </div>
-                        <div class="provider-time">⏱️ ${time}</div>
-                    </div>
-                </div>`;
-        }).join('');
-
-        el.querySelectorAll('.update-provider').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                updateProvider(btn.dataset.provider, btn);
+            const payload = { [index]: !currentEnabled };
+            const resp = await window.API.apiFetch('/rules/disable', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
             });
-        });
+            if (!resp.ok) {
+                throw new Error(`HTTP ${resp.status}`);
+            }
+            showToast(currentEnabled ? '规则已禁用' : '规则已启用', 'success');
+        } catch (err) {
+            console.error('[Rules] 切换规则状态失败:', err);
+            if (rule) {
+                rule.enabled = currentEnabled;
+            }
+            renderRules();
+            showToast(t('common.operation_failed') + ': ' + err.message, 'error');
+        }
     }
 
-    function initVirtualScroll() {
-        viewport = document.getElementById('rules-viewport');
-        listContainer = document.getElementById('rules-tbody');
-        scrollSpacer = document.getElementById('rules-spacer');
-        if (!viewport) return;
-
-        viewport.addEventListener('scroll', updateVisibleRange, { passive: true });
-        updateVisibleRange();
-    }
-
-    function showToast(msg, type) {
+    // ==================== Toast 提示 ====================
+    function showToast(msg, type = 'info') {
         let toast = document.getElementById('rules-toast');
         if (!toast) {
             toast = document.createElement('div');
@@ -206,35 +344,53 @@ window.Rules = (function() {
             document.body.appendChild(toast);
         }
         toast.textContent = msg;
-        toast.style.background = type === 'error' ? '#ef4444' : type === 'success' ? '#22c55e' : '#3b82f6';
+        toast.style.background = type === 'error' ? '#ef4444' : type === 'success' ? '#22c55e' : type === 'warning' ? '#f59e0b' : '#3b82f6';
         toast.style.opacity = '1';
         clearTimeout(toast._timer);
-        toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 2500);
+        toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 3500);
     }
 
-    function showError(msg) {
-        if (!allRules.length) {
-            const c = document.getElementById('rules-content');
-            if (c) c.innerHTML = `<div class="card error-card"><div style="padding:40px;text-align:center;color:#dc2626;">${escapeHtml(msg)}</div></div>`;
-        } else showToast(msg, 'error');
+    // ==================== 视图切换 ====================
+    function switchView(view) {
+        currentView = view;
+        document.querySelectorAll('.view-tab').forEach(tab => {
+            tab.classList.toggle('active', tab.dataset.view === view);
+        });
+
+        const rulesContainer = document.getElementById('rules-view');
+        const providersContainer = document.getElementById('providers-view');
+
+        if (view === 'rules') {
+            rulesContainer.style.display = 'block';
+            providersContainer.style.display = 'none';
+            renderRules();
+        } else {
+            rulesContainer.style.display = 'none';
+            providersContainer.style.display = 'block';
+            renderProvidersTable();
+        }
     }
 
     // ==================== 语言切换刷新 ====================
     function refreshUI() {
-        renderProviders();
         const countEl = document.getElementById('rules-count');
-        if (countEl) countEl.innerText = filteredRules.length;
+        if (countEl) countEl.innerText = allRules.length;
         const filterInput = document.getElementById('rule-filter');
         if (filterInput && window.i18n) {
             filterInput.placeholder = window.i18n.t('rules.search_placeholder');
         }
-        const updateAllBtn = document.getElementById('update-all-providers');
-        if (updateAllBtn && window.i18n) {
-            updateAllBtn.textContent = '🔄 ' + window.i18n.t('rules.update_all_btn');
+        const titleEl = container?.querySelector('.rules-title');
+        if (titleEl && window.i18n) {
+            titleEl.textContent = window.i18n.t('rules.title');
         }
-        const providersTitle = container?.querySelector('.providers-section h3');
-        if (providersTitle && window.i18n) {
-            providersTitle.textContent = window.i18n.t('rules.providers_title');
+        const updateAllBtn = document.getElementById('update-all-rules');
+        if (updateAllBtn && window.i18n) {
+            updateAllBtn.textContent = window.i18n.t('rules.update_all');
+        }
+        if (currentView === 'rules') renderRules();
+        else {
+            renderProvidersTable();
+            updateProviderCount();
         }
     }
 
@@ -255,99 +411,303 @@ window.Rules = (function() {
         if (!container) return;
         container.innerHTML = `
             <style>
-                .rules-toolbar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
-                .search-box{flex:1;min-width:200px;padding:8px 12px;border:1px solid var(--border-color,#e2e8f0);border-radius:6px;background:var(--bg-primary,#fff);color:var(--text-primary);font-size:13px;transition:all .2s}
-                .search-box:focus{outline:none;border-color:var(--accent,#3b82f6);box-shadow:0 0 0 2px rgba(59,130,246,0.1)}
-                .rules-table-wrapper{border:1px solid var(--border-color,#e2e8f0);border-radius:8px;overflow:hidden}
-                .rules-table{width:100%;border-collapse:collapse;background:var(--card-bg,#fff)}
-                .rules-table thead{background:var(--bg-secondary,#f8fafc);border-bottom:1px solid var(--border-color,#e2e8f0)}
-                .rules-table th{padding:10px 12px;text-align:left;font-weight:600;color:var(--text-primary,#1e293b);font-size:12px}
-                .rules-viewport{height:400px;overflow-y:auto;overflow-x:hidden;background:var(--card-bg,#fff)}
-                .rules-viewport tbody{display:block}
-                .rules-viewport tr{display:table;width:100%;table-layout:fixed;border-bottom:1px solid var(--border-color,#e2e8f0);transition:background .1s}
-                .rules-viewport tr:hover{background:var(--hover-bg,#f8fafc)}
-                .rules-viewport td{padding:8px 12px;font-size:12px;color:var(--text-primary,#1e293b);word-break:break-all}
-                .type-badge{display:inline-block;padding:2px 8px;border-radius:4px;background:var(--bg-primary,#e2e8f0);color:var(--text-secondary,#64748b);font-weight:600;font-size:11px}
-                .rule-type{width:120px;flex-shrink:0}
-                .rule-payload{flex:1;min-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-                .rule-proxy{width:150px;flex-shrink:0;font-weight:500;color:var(--accent,#3b82f6)}
-                .rules-footer{padding:12px 16px;background:var(--bg-secondary,#f8fafc);border-top:1px solid var(--border-color,#e2e8f0);font-size:12px;color:var(--text-secondary,#64748b);text-align:center}
-                .empty-state{padding:60px 20px;text-align:center;color:var(--text-secondary,#64748b)}
-                .provider-card{display:flex;justify-content:space-between;align-items:flex-start;padding:12px 14px;border:1px solid var(--border-color,#e2e8f0);border-radius:8px;margin-bottom:8px;background:var(--card-bg,#fff);transition:all .2s}
-                .provider-card:hover{border-color:var(--accent,#3b82f6);box-shadow:0 1px 3px rgba(59,130,246,0.1)}
-                .provider-info{flex:1;overflow:hidden}
-                .provider-header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
-                .provider-header strong{color:var(--text-primary,#1e293b);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
-                .update-provider{padding:4px 10px;border:1px solid var(--border-color,#e2e8f0);border-radius:4px;background:transparent;cursor:pointer;font-size:12px;transition:all .15s;flex-shrink:0}
-                .update-provider:hover:not(:disabled){border-color:var(--accent,#3b82f6);background:rgba(59,130,246,0.08)}
-                .update-provider:disabled{opacity:.5;cursor:not-allowed}
-                .provider-meta{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:4px;font-size:12px;color:var(--text-secondary,#64748b)}
-                .meta-item{display:flex;align-items:center;gap:4px}
-                .provider-time{font-size:11px;color:var(--text-secondary,#94a3b8)}
-                .btn-sm{padding:6px 14px;border:1px solid var(--border-color,#e2e8f0);border-radius:6px;background:var(--bg-secondary,#f8fafc);color:var(--text-primary,#1e293b);cursor:pointer;font-size:12px;font-weight:600;transition:all .2s;display:inline-flex;align-items:center;gap:4px}
-                .btn-sm:hover{background:var(--accent,#3b82f6);color:#fff;border-color:var(--accent,#3b82f6);transform:translateY(-1px)}
-                .btn-sm:disabled{opacity:.5;cursor:not-allowed;transform:none}
-                .card h3{margin:0 0 12px 0}
-                .providers-section{margin-top:20px}
+                .rules-toolbar {
+                    display: flex;
+                    gap: 8px;
+                    margin-bottom: 16px;
+                    flex-wrap: wrap;
+                    align-items: center;
+                }
+                .search-box {
+                    flex: 1;
+                    min-width: 180px;
+                    padding: 8px 12px;
+                    border: 1px solid var(--border-color, #e2e8f0);
+                    border-radius: 6px;
+                    background: var(--bg-input, #fff);
+                    color: var(--text-primary, #1e293b);
+                    font-size: 13px;
+                    transition: all .2s;
+                }
+                .search-box:focus {
+                    outline: none;
+                    border-color: var(--accent, #3b82f6);
+                    box-shadow: 0 0 0 2px rgba(59,130,246,0.1);
+                }
+                .view-tabs {
+                    display: flex;
+                    gap: 4px;
+                    background: var(--bg-secondary, #f1f5f9);
+                    padding: 4px;
+                    border-radius: 8px;
+                }
+                .view-tab {
+                    padding: 6px 16px;
+                    border: none;
+                    border-radius: 6px;
+                    background: transparent;
+                    color: var(--text-secondary, #64748b);
+                    cursor: pointer;
+                    font-size: 14px;
+                    font-weight: 500;
+                    transition: all 0.2s;
+                }
+                .view-tab.active {
+                    background: var(--accent, #3b82f6);
+                    color: #fff;
+                    font-weight: 600;
+                    box-shadow: 0 2px 4px rgba(59,130,246,0.3);
+                }
+                .view-tab:hover:not(.active) {
+                    background: rgba(255,255,255,0.5);
+                }
+                .rules-table-wrapper {
+                    border: 1px solid var(--border-color, #e2e8f0);
+                    border-radius: 8px;
+                    overflow: auto;
+                }
+                .rules-table {
+                    width: 100%;
+                    border-collapse: collapse;
+                    background: var(--card-bg, #fff);
+                }
+                .rules-table thead {
+                    background: var(--bg-secondary, #f8fafc);
+                    border-bottom: 1px solid var(--border-color, #e2e8f0);
+                }
+                .rules-table th {
+                    padding: 8px 12px;
+                    text-align: left;
+                    font-weight: 600;
+                    color: var(--text-primary, #1e293b);
+                    font-size: 12px;
+                }
+                .rules-table th.rule-enabled {
+                    text-align: center;
+                    width: 60px;
+                }
+                .rules-table th.rule-payload {
+                    text-align: left;
+                }
+                .rules-table th.rule-proxy {
+                    text-align: left;
+                }
+                .rules-table tbody tr {
+                    border-bottom: 1px solid var(--border-color, #e2e8f0);
+                    transition: background .1s;
+                }
+                .rules-table tbody tr:hover {
+                    background: var(--hover-bg, #f8fafc);
+                }
+                .rules-table td {
+                    padding: 6px 10px;
+                    font-size: 13px;
+                    color: var(--text-primary, #1e293b);
+                    word-break: break-all;
+                }
+                .rule-payload {
+                    flex: 1;
+                    min-width: 120px;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                }
+                .rule-proxy {
+                    width: 120px;
+                    flex-shrink: 0;
+                    font-weight: 500;
+                    color: var(--accent, #3b82f6);
+                }
+                .rule-enabled {
+                    width: 60px;
+                    text-align: center;
+                    flex-shrink: 0;
+                }
+                .rules-footer {
+                    padding: 8px 12px;
+                    background: var(--bg-secondary, #f8fafc);
+                    border-top: 1px solid var(--border-color, #e2e8f0);
+                    font-size: 13px;
+                    color: var(--text-secondary, #64748b);
+                    text-align: center;
+                }
+                .toggle-switch {
+                    position: relative;
+                    display: inline-block;
+                    width: 36px;
+                    height: 20px;
+                    flex-shrink: 0;
+                }
+                .toggle-switch input {
+                    opacity: 0;
+                    width: 0;
+                    height: 0;
+                }
+                .slider {
+                    position: absolute;
+                    cursor: pointer;
+                    top: 0;
+                    left: 0;
+                    right: 0;
+                    bottom: 0;
+                    background-color: var(--border-color, #ccc);
+                    transition: .3s;
+                    border-radius: 20px;
+                }
+                .slider:before {
+                    position: absolute;
+                    content: "";
+                    height: 14px;
+                    width: 14px;
+                    left: 3px;
+                    bottom: 3px;
+                    background-color: white;
+                    transition: .3s;
+                    border-radius: 50%;
+                }
+                input:checked + .slider {
+                    background-color: var(--accent, #3b82f6);
+                }
+                input:checked + .slider:before {
+                    transform: translateX(16px);
+                }
+                .btn {
+                    padding: 6px 14px;
+                    border-radius: 6px;
+                    border: 1px solid var(--border-color, #e2e8f0);
+                    background: var(--bg-secondary, #f8fafc);
+                    color: var(--text-primary, #1e293b);
+                    cursor: pointer;
+                    font-size: 13px;
+                    transition: all .2s;
+                }
+                .btn:hover {
+                    background: var(--hover-bg, #e2e8f0);
+                }
+                .btn-primary {
+                    background: var(--accent, #3b82f6);
+                    color: #fff;
+                    border-color: var(--accent, #3b82f6);
+                }
+                .btn-primary:hover {
+                    background: var(--accent-dark, #2563eb);
+                    border-color: var(--accent-dark, #2563eb);
+                }
+                .btn-icon {
+                    background: none;
+                    border: none;
+                    cursor: pointer;
+                    padding: 4px;
+                    color: var(--text-secondary, #64748b);
+                    border-radius: 4px;
+                    transition: background 0.2s, color 0.2s;
+                }
+                .btn-icon:hover {
+                    background: var(--hover-bg, #e2e8f0);
+                    color: var(--accent, #3b82f6);
+                }
+                .card h3 {
+                    margin: 0 0 12px 0;
+                }
+                /* 提供商表格列 */
+                .provider-name-cell { min-width: 120px; }
+                .provider-type-cell { width: 100px; }
+                .provider-rule-count-cell { width: 80px; text-align: center; }
+                .provider-time-cell { min-width: 160px; }
+                .provider-action-cell { width: 60px; text-align: center; }
             </style>
             <div class="card">
-                <h3>${t('rules.title')}</h3>
+                <h3 class="rules-title">${t('rules.title')}</h3>
                 <div class="rules-toolbar">
+                    <div class="view-tabs">
+                        <button class="view-tab active" data-view="rules">${t('rules.rules_tab') || '规则'}</button>
+                        <button class="view-tab" data-view="providers">${t('rules.providers_tab') || '规则提供者'}</button>
+                    </div>
                     <input type="text" id="rule-filter" class="search-box" placeholder="${t('rules.search_placeholder')}" value="${escapeHtml(filterText)}">
-                    <button id="update-all-providers" class="btn-sm">🔄 ${t('rules.update_all_btn')}</button>
+                    <button id="update-all-rules" class="btn btn-primary">${t('rules.update_all')}</button>
                 </div>
-                <div class="rules-table-wrapper">
-                    <table class="rules-table">
-                        <thead><tr><th class="rule-type">${t('rules.type')}</th><th>${t('rules.payload')}</th><th class="rule-proxy">${t('rules.proxy')}</th></tr></thead>
-                    </table>
-                    <div id="rules-viewport" class="rules-viewport">
-                        <div id="rules-spacer"></div>
-                        <tbody id="rules-tbody"></tbody>
+                <div id="rules-view" style="display:block;">
+                    <div class="rules-table-wrapper">
+                        <table class="rules-table">
+                            <thead><tr>
+                                <th class="rule-enabled">${t('rules.enabled')}</th>
+                                <th class="rule-payload">${t('rules.payload')}</th>
+                                <th class="rule-proxy">${t('rules.proxy')}</th>
+                            </tr></thead>
+                            <tbody id="rules-tbody"></tbody>
+                        </table>
+                        <div class="rules-footer">${t('rules.total')} <strong id="rules-count">0</strong> ${t('rules.rules_count')}</div>
                     </div>
                 </div>
-                <div class="rules-footer">${t('rules.total')} <strong id="rules-count">0</strong> ${t('rules.rules_count')}</div>
-            </div>
-            <div class="card providers-section">
-                <h3>${t('rules.providers_title')}</h3>
-                <div id="providers-list"></div>
+                <div id="providers-view" style="display:none;">
+                    <div class="rules-table-wrapper">
+                        <table class="rules-table">
+                            <thead><tr>
+                                <th class="provider-name-cell">${t('rules.provider_name') || '名称'}</th>
+                                <th class="provider-type-cell">${t('rules.provider_type') || '类型'}</th>
+                                <th class="provider-rule-count-cell">${t('rules.rule_count') || '规则数'}</th>
+                                <th class="provider-time-cell">${t('rules.updated_at') || '更新时间'}</th>
+                                <th class="provider-action-cell">${t('rules.action')}</th>
+                            </tr></thead>
+                            <tbody id="providers-tbody"></tbody>
+                        </table>
+                        <div class="rules-footer">${t('rules.total')} <strong id="providers-count">0</strong> ${t('rules.providers_count') || '个提供者'}</div>
+                    </div>
+                </div>
             </div>
         `;
 
+        // 绑定视图切换
+        document.querySelectorAll('.view-tab').forEach(tab => {
+            tab.addEventListener('click', function() {
+                const view = this.dataset.view;
+                switchView(view);
+            });
+        });
+
+        // 绑定搜索过滤（仅规则视图）
         const filterInput = document.getElementById('rule-filter');
         if (filterInput) {
             filterInput.addEventListener('input', e => {
                 filterText = e.target.value.trim();
-                applyFilter();
+                if (currentView === 'rules') renderRules();
             });
         }
-        const updateAllBtn = document.getElementById('update-all-providers');
-        if (updateAllBtn) updateAllBtn.addEventListener('click', updateAllProviders);
 
-        initVirtualScroll();
-        fetchRules();
+        // 全部更新按钮
+        const updateAllBtn = document.getElementById('update-all-rules');
+        if (updateAllBtn) {
+            updateAllBtn.addEventListener('click', function() {
+                if (currentView === 'rules') {
+                    updateAllProviders().then(() => {
+                        fetchRules();
+                    });
+                } else {
+                    updateAllProviders();
+                }
+            });
+        }
+
+        // 初始加载
         fetchProviders();
+        fetchRules();
         initLanguageListener();
     }
 
     async function init() {
         container = document.getElementById('rules-content');
         if (!container) return;
-        console.log('[Rules] 初始化模块');
         render();
     }
 
     function destroy() {
         allRules = [];
-        filteredRules = [];
-        providers = {};
-        visibleStart = visibleEnd = 0;
-        listContainer = scrollSpacer = viewport = null;
+        allProviders = [];
         if (container) container.innerHTML = '';
         if (langEventListener) {
             window.removeEventListener('languageChanged', langEventListener);
             langEventListener = null;
         }
-        console.log('[Rules] 销毁模块');
     }
 
     return { init, destroy };

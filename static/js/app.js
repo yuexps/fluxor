@@ -63,6 +63,33 @@
         }
     }
 
+    function updateSidebarLabels() {
+        const t = window.i18n ? window.i18n.t : (key) => key;
+        // 更新侧边栏
+        document.querySelectorAll('.nav-item').forEach(item => {
+            const page = item.dataset.page;
+            if (page) {
+                const labelSpan = item.querySelector('.nav-label');
+                if (labelSpan) labelSpan.textContent = t('nav.' + page);
+            }
+        });
+        // 更新底部导航
+        document.querySelectorAll('.mobile-tab-item').forEach(item => {
+            const page = item.dataset.page;
+            if (page) {
+                const labelSpan = item.querySelector('.tab-label');
+                if (labelSpan) labelSpan.textContent = t('nav.' + page);
+            }
+        });
+        // 更新语言切换按钮文字
+        const langToggle = document.getElementById('langToggle');
+        if (langToggle) {
+            const currentLang = window.i18n ? window.i18n.getLanguage() : 'zh';
+            const span = langToggle.querySelector('#currentLang');
+            if (span) span.textContent = currentLang === 'zh' ? '简' : 'EN';
+        }
+    }
+
     function initNavigation() {
         document.querySelectorAll('.nav-item').forEach(nav => {
             nav.addEventListener('click', (e) => {
@@ -74,13 +101,56 @@
                 }
             });
         });
+        updateSidebarLabels();
     }
 
+    function initLanguage() {
+        const langToggle = document.getElementById('langToggle');
+        if (langToggle && window.i18n) {
+            langToggle.addEventListener('click', () => {
+                const newLang = window.i18n.getLanguage() === 'zh' ? 'en' : 'zh';
+                window.i18n.setLanguage(newLang);
+                window.dispatchEvent(new CustomEvent('languageChanged', { detail: { lang: newLang } }));
+                // 刷新当前页面内容（模块重新初始化）
+                const mod = window[moduleMap[currentPage]];
+                if (mod && typeof mod.destroy === 'function') mod.destroy();
+                showPage(currentPage);
+            });
+        }
+        // 监听全局语言变化事件（来自 config.js 等）
+        window.addEventListener('languageChanged', updateSidebarLabels);
+    }
+
+    // ===== 侧边栏（仅汉堡菜单，无箭头） =====
     function initSidebar() {
         const sidebar = document.getElementById('sidebar');
         const toggleBtn = document.getElementById('sidebarToggle');
         const overlay = document.getElementById('sidebarOverlay');
         if (!sidebar) return;
+
+        if (toggleBtn) {
+            toggleBtn.innerHTML = `
+                <svg class="icon-hamburger" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="3" y1="6" x2="21" y2="6"></line>
+                    <line x1="3" y1="12" x2="21" y2="12"></line>
+                    <line x1="3" y1="18" x2="21" y2="18"></line>
+                </svg>
+                <svg class="icon-close" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            `;
+            const updateToggleIcon = () => {
+                const isCollapsed = sidebar.classList.contains('collapsed');
+                const hamburger = toggleBtn.querySelector('.icon-hamburger');
+                const closeIcon = toggleBtn.querySelector('.icon-close');
+                if (hamburger && closeIcon) {
+                    hamburger.style.display = isCollapsed ? 'block' : 'none';
+                    closeIcon.style.display = isCollapsed ? 'none' : 'block';
+                }
+            };
+            toggleBtn._updateIcon = updateToggleIcon;
+        }
 
         const isMobile = () => window.innerWidth <= 768;
 
@@ -95,6 +165,7 @@
             } else {
                 sidebar.classList.toggle('collapsed');
                 localStorage.setItem('fluxor-sidebar-collapsed', sidebar.classList.contains('collapsed'));
+                if (toggleBtn && toggleBtn._updateIcon) toggleBtn._updateIcon();
             }
         }
 
@@ -103,7 +174,10 @@
             if (overlay) overlay.classList.remove('active');
         }
 
-        if (toggleBtn) toggleBtn.addEventListener('click', toggleSidebar);
+        if (toggleBtn) {
+            toggleBtn.addEventListener('click', toggleSidebar);
+            if (toggleBtn._updateIcon) toggleBtn._updateIcon();
+        }
         if (overlay) overlay.addEventListener('click', closeMobileSidebar);
 
         let prevMobile = isMobile();
@@ -117,6 +191,7 @@
                 }
                 prevMobile = nowMobile;
                 updateMobileTabBarVisibility();
+                if (toggleBtn && toggleBtn._updateIcon) toggleBtn._updateIcon();
             }
         });
 
@@ -127,14 +202,12 @@
         });
     }
 
+    // ===== 移动端底部导航 =====
     function updateMobileTabBarVisibility() {
         const isMobile = window.innerWidth <= 768;
         const tabBar = document.querySelector('.mobile-tabbar');
-        if (isMobile) {
-            if (!tabBar) initMobileTabBar();
-            else tabBar.style.display = 'flex';
-        } else {
-            if (tabBar) tabBar.style.display = 'none';
+        if (tabBar) {
+            tabBar.style.display = isMobile ? 'flex' : 'none';
         }
     }
 
@@ -144,14 +217,15 @@
 
         const tabBar = document.createElement('div');
         tabBar.className = 'mobile-tabbar';
+        tabBar.style.display = 'none'; // 初始隐藏，由 update 控制
         const items = [
             { page: 'overview', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>', labelKey: 'nav.overview' },
             { page: 'proxies', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>', labelKey: 'nav.proxies' },
+            { page: 'subscription', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="2 8 12 14 22 8"/></svg>', labelKey: 'nav.subscription' },
             { page: 'rules', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>', labelKey: 'nav.rules' },
             { page: 'connections', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>', labelKey: 'nav.connections' },
             { page: 'logs', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>', labelKey: 'nav.logs' },
-            { page: 'config', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>', labelKey: 'nav.config' },
-            { page: 'subscription', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4v16h16V4H4zm2 2h12v12H6V6zm10 4h-2v2h2v-2zm-4 0h-2v2h2v-2zm-4 0H6v2h2v-2z"/><path d="M8 14h8v2H8z"/></svg>', labelKey: 'nav.subscription' }
+            { page: 'config', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>', labelKey: 'nav.config' }
         ];
 
         items.forEach(item => {
@@ -194,25 +268,6 @@
         }
     }
 
-    function initLanguage() {
-        const langToggle = document.getElementById('langToggle');
-        if (langToggle && window.i18n) {
-            langToggle.addEventListener('click', () => {
-                const newLang = window.i18n.getLanguage() === 'zh' ? 'en' : 'zh';
-                window.i18n.setLanguage(newLang);
-                showPage(currentPage);
-                if (window.innerWidth <= 768 && mobileTabBarCreated) {
-                    document.querySelectorAll('.mobile-tab-item').forEach(item => {
-                        const key = item.getAttribute('data-page');
-                        const label = window.i18n.t('nav.' + key);
-                        const span = item.querySelector('.tab-label');
-                        if (span) span.textContent = label;
-                    });
-                }
-            });
-        }
-    }
-
     function init() {
         console.log('[App] 初始化开始');
         createContainers();
@@ -220,6 +275,7 @@
         initSidebar();
         initTheme();
         initLanguage();
+        initMobileTabBar(); // <--- 新增，确保底部导航被创建
         updateMobileTabBarVisibility();
         showPage('overview');
         console.log('[App] 初始化完成');
