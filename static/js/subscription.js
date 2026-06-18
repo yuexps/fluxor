@@ -16,7 +16,7 @@ window.Subscription = (function() {
     let editingIndex = -1;
     let container = null;
 
-    // ---------- API 封装（兼容 window.API 未加载的情况） ----------
+    // ---------- API 封装 ----------
     async function apiFetch(path, options = {}) {
         if (window.API && typeof window.API.apiFetch === 'function') {
             return window.API.apiFetch(path, options);
@@ -32,6 +32,74 @@ window.Subscription = (function() {
             console.warn('[Subscription] fallback fetch 响应状态:', resp.status, url);
         }
         return resp;
+    }
+
+    // ---------- 获取单个订阅详细信息（流量、有效期、更新时间） ----------
+    async function fetchSubscriptionInfo(subName) {
+        try {
+            const encoded = encodeURIComponent(subName);
+            const resp = await apiFetch('/providers/proxies/' + encoded);
+            if (!resp.ok) {
+                console.warn('[Subscription] 获取订阅信息失败:', resp.status, subName);
+                return null;
+            }
+            const data = await resp.json();
+            const updatedAt = data.updatedAt || null;
+            let info = data.subscriptionInfo || data;
+            if (info && typeof info === 'object') {
+                return {
+                    upload: info.Upload || 0,
+                    download: info.Download || 0,
+                    total: info.Total || 0,
+                    expire: info.Expire || 0,
+                    updatedAt: updatedAt
+                };
+            }
+            return null;
+        } catch (e) {
+            console.warn('[Subscription] 请求订阅信息异常:', subName, e);
+            return null;
+        }
+    }
+
+    // ---------- 批量获取所有订阅信息 ----------
+    async function enrichSubscriptions(subs) {
+        if (!subs || subs.length === 0) return subs;
+        const promises = subs.map(sub => fetchSubscriptionInfo(sub.name));
+        const results = await Promise.allSettled(promises);
+        results.forEach((result, idx) => {
+            if (result.status === 'fulfilled' && result.value) {
+                subs[idx].info = result.value;
+            } else {
+                subs[idx].info = null;
+            }
+        });
+        return subs;
+    }
+
+    // ---------- 更新单个订阅 ----------
+    async function updateSub(index) {
+        const sub = currentConfig.subscriptions[index];
+        if (!sub) return;
+
+        const btn = document.querySelector(`.btn-update[data-index="${index}"]`);
+        if (btn) btn.disabled = true;
+
+        try {
+            const encoded = encodeURIComponent(sub.name);
+            const resp = await apiFetch('/providers/proxies/' + encoded, { method: 'PUT' });
+            if (resp.ok) {
+                alert(`订阅 "${sub.name}" 更新成功`); // alert 暂不翻译，后续可优化
+                await enrichSubscriptions(currentConfig.subscriptions);
+                renderSubList(currentConfig.subscriptions);
+            } else {
+                alert(`更新失败: ${resp.status}`);
+            }
+        } catch (e) {
+            alert('更新出错: ' + e.message);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
     }
 
     // ---------- 初始化 ----------
@@ -67,7 +135,10 @@ window.Subscription = (function() {
             if (uiPanelEl) uiPanelEl.value = cfg.ui_panel || 'metacubexd';
             if (metaBackendEl) metaBackendEl.value = cfg.meta_backend_url || '';
             togglePrefixMode();
-            renderSubList(currentConfig.subscriptions || []);
+
+            const subs = currentConfig.subscriptions || [];
+            await enrichSubscriptions(subs);
+            renderSubList(subs);
         } catch (e) {
             console.error('[Subscription] 加载配置失败:', e);
             currentConfig = { subscriptions: [] };
@@ -178,9 +249,7 @@ window.Subscription = (function() {
             </div>
         `;
 
-        // 绑定事件
         bindEvents();
-        // 初始化密码可见性（默认隐藏）
         const toggleBtn = document.getElementById('toggleSecret');
         if (toggleBtn) {
             toggleBtn.dataset.visible = 'false';
@@ -203,7 +272,6 @@ window.Subscription = (function() {
 
         document.getElementById('subPrefixSwitch').addEventListener('change', togglePrefixMode);
 
-        // 密码可见性切换
         const toggleBtn = document.getElementById('toggleSecret');
         const passwordInput = document.getElementById('subPanelSecret');
         if (toggleBtn && passwordInput) {
@@ -228,6 +296,31 @@ window.Subscription = (function() {
         if (prefixSection) prefixSection.style.display = enabled ? 'block' : 'none';
     }
 
+    // ---------- 辅助：格式化更新时间为 YYYY-MM-DD HH:mm，无效返回 null ----------
+    function formatUpdateTime(dateStr) {
+        if (!dateStr) return null;
+        try {
+            const date = new Date(dateStr);
+            if (isNaN(date.getTime())) return null;
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            const hours = String(date.getHours()).padStart(2, '0');
+            const minutes = String(date.getMinutes()).padStart(2, '0');
+            return `${year}-${month}-${day} ${hours}:${minutes}`;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // ---------- 辅助：格式化有效期，返回日期字符串或 null（0表示不限时） ----------
+    function formatExpire(expire) {
+        if (expire === 0) return null;
+        const date = new Date(expire * 1000);
+        return date.toLocaleString();
+    }
+
+    // ---------- 渲染订阅列表 ----------
     function renderSubList(subs) {
         console.log('[Subscription] 渲染订阅列表:', subs);
         const list = document.getElementById('subList');
@@ -239,45 +332,122 @@ window.Subscription = (function() {
             list.innerHTML = `<p>${t('subscription.no_subscriptions')}</p>`;
             return;
         }
-        const prefixEnabled = document.getElementById('subPrefixSwitch')?.checked || false;
-        list.innerHTML = subs.map((sub, idx) => `
-            <div class="sub-item">
-                <div class="info">
-                    <strong>${escapeHtml(sub.name)}</strong><br>
-                    <small class="sub-url-container">
-                        <button class="sub-url-toggle" data-url="${escapeHtml(sub.url)}" data-hidden="true" style="background:none;border:none;cursor:pointer;padding:0;margin-right:4px;vertical-align:middle;color:var(--text-secondary);">
-                            <svg class="eye-open" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="display:block;">
-                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                                <circle cx="12" cy="12" r="3"/>
-                            </svg>
-                            <svg class="eye-closed" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="display:none;">
-                                <path d="M2 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                                <line x1="2" y1="2" x2="22" y2="22"/>
-                            </svg>
-                        </button>
-                        <span class="sub-url-display" style="vertical-align:middle;">••••••••</span>
-                    </small><br>
-                    <small>${t('subscription.update_interval')}: ${sub.update_interval}s</small>
-                    <small>${t('subscription.health_interval')}: ${sub.health_interval}s</small>
-                    ${prefixEnabled ? `<br><small>${t('subscription.prefix')}: ${escapeHtml(sub.prefix || '')}</small>` : ''}
-                </div>
-                <div class="actions">
-                    <button type="button" class="btn-edit" data-index="${idx}" style="background:none;border:none;cursor:pointer;padding:4px;color:var(--text-secondary);">
-                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                        </svg>
-                    </button>
-                    <button type="button" class="btn-delete" data-index="${idx}" style="background:none;border:none;cursor:pointer;padding:4px;color:var(--text-secondary);">
-                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <polyline points="3 6 5 6 21 6"/>
-                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                        </svg>
-                    </button>
-                </div>
-            </div>
-        `).join('');
 
+        // 辅助：格式化字节为GB（保留一位小数）
+        function formatGB(bytes) {
+            if (bytes === 0) return '0.0 GB';
+            const gb = bytes / (1024 * 1024 * 1024);
+            return gb.toFixed(1) + ' GB';
+        }
+
+        let html = '';
+        subs.forEach((sub, idx) => {
+            const info = sub.info;
+            let trafficHtml = '';
+            let usageExpireHtml = '';
+            let updatedHtml = '';
+
+            if (info) {
+                const used = info.upload + info.download;
+                const total = info.total;
+                const percent = total > 0 ? (used / total) * 100 : 0;
+                const percentDisplay = percent.toFixed(1) + '%';
+
+                trafficHtml = `
+                    <div style="display:flex; align-items:center; gap:8px; margin-top:4px;">
+                        <div style="flex:1; height:6px; background:var(--border-color); border-radius:3px; overflow:hidden;">
+                            <div style="height:100%; width:${Math.min(percent, 100)}%; background:var(--accent); border-radius:3px;"></div>
+                        </div>
+                        <span style="font-size:0.85em; white-space:nowrap;">${percentDisplay}</span>
+                    </div>
+                `;
+
+                // 有效期显示
+                const expireDisplay = info.expire === 0 ? t('subscription.expire_forever') : formatExpire(info.expire);
+                usageExpireHtml = `
+                    <div style="display:flex; justify-content:space-between; font-size:0.85em; margin-top:2px;">
+                        <span>${formatGB(used)} / ${formatGB(total)}</span>
+                        <span style="color:var(--text-secondary);">${t('subscription.valid_until_label')}${expireDisplay}</span>
+                    </div>
+                `;
+
+                // 更新时间
+                const updatedTime = formatUpdateTime(info.updatedAt);
+                updatedHtml = `
+                    <div style="font-size:0.85em; color:var(--text-secondary); margin-top:2px;">
+                        ${t('subscription.updated_at_label')}${updatedTime || t('common.unknown')}
+                    </div>
+                `;
+            } else {
+                trafficHtml = `<div style="margin-top:4px; font-size:0.85em; color:var(--text-secondary);">${t('subscription.traffic_unavailable')}</div>`;
+                usageExpireHtml = '';
+                updatedHtml = '';
+            }
+
+            html += `
+                <div class="sub-item">
+                    <div class="info" style="flex:1; min-width:0;">
+                        <!-- 第一行：名称（左侧），按钮（右侧） -->
+                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:4px;">
+                            <strong style="word-break:break-word; flex:1; min-width:0;">
+                                ${escapeHtml(sub.name)}
+                            </strong>
+                            <div class="actions" style="display:flex; gap:4px; flex-shrink:0;">
+                                <button type="button" class="btn-update" data-index="${idx}" style="background:none;border:none;cursor:pointer;padding:4px;color:var(--text-secondary);" title="${t('subscription.update')}">
+                                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <polyline points="23 4 23 10 17 10"/>
+                                        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                                    </svg>
+                                </button>
+                                <button type="button" class="btn-edit" data-index="${idx}" style="background:none;border:none;cursor:pointer;padding:4px;color:var(--text-secondary);" title="${t('common.edit')}">
+                                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                                    </svg>
+                                </button>
+                                <button type="button" class="btn-delete" data-index="${idx}" style="background:none;border:none;cursor:pointer;padding:4px;color:var(--text-secondary);" title="${t('common.delete')}">
+                                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <polyline points="3 6 5 6 21 6"/>
+                                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                        <!-- 订阅链接（可隐藏） -->
+                        <small class="sub-url-container">
+                            <button class="sub-url-toggle" data-url="${escapeHtml(sub.url)}" data-hidden="true" style="background:none;border:none;cursor:pointer;padding:0;margin-right:4px;vertical-align:middle;color:var(--text-secondary);">
+                                <svg class="eye-open" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="display:block;">
+                                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                                    <circle cx="12" cy="12" r="3"/>
+                                </svg>
+                                <svg class="eye-closed" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="display:none;">
+                                    <path d="M2 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                                    <line x1="2" y1="2" x2="22" y2="22"/>
+                                </svg>
+                            </button>
+                            <span class="sub-url-display" style="vertical-align:middle;">••••••••</span>
+                        </small><br>
+                        <!-- 流量进度条 -->
+                        ${trafficHtml}
+                        <!-- 使用量 + 有效期 -->
+                        ${usageExpireHtml}
+                        <!-- 更新时间 -->
+                        ${updatedHtml}
+                    </div>
+                </div>
+            `;
+        });
+        list.innerHTML = html;
+
+        // 绑定更新按钮事件
+        document.querySelectorAll('.btn-update').forEach(btn => {
+            btn.onclick = (e) => {
+                const idx = parseInt(e.currentTarget.dataset.index);
+                updateSub(idx);
+            };
+        });
+
+        // 绑定编辑/删除事件
         document.querySelectorAll('.btn-edit').forEach(btn => {
             btn.onclick = (e) => editSub(parseInt(e.currentTarget.dataset.index));
         });
@@ -285,7 +455,7 @@ window.Subscription = (function() {
             btn.onclick = (e) => deleteSub(parseInt(e.currentTarget.dataset.index));
         });
 
-        // URL 显示切换（使用 SVG 图标）
+        // URL 显示切换
         document.querySelectorAll('.sub-url-toggle').forEach(btn => {
             btn.addEventListener('click', function(e) {
                 e.stopPropagation();
@@ -309,6 +479,7 @@ window.Subscription = (function() {
         });
     }
 
+    // ---------- 弹窗逻辑 ----------
     function openSubModal(index = -1) {
         editingIndex = index;
         const modal = document.getElementById('subModal');
@@ -357,7 +528,9 @@ window.Subscription = (function() {
         } else {
             currentConfig.subscriptions.push(sub);
         }
-        renderSubList(currentConfig.subscriptions);
+        enrichSubscriptions(currentConfig.subscriptions).then(() => {
+            renderSubList(currentConfig.subscriptions);
+        });
         closeSubModal();
     }
 

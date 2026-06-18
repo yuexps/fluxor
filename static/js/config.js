@@ -29,7 +29,7 @@ window.Config = (function() {
     let coreRunning = false;
     let coreStatusTimer = null;
     let _populating = false;
-    let _lastCoreStatus = null; // 用于避免重复更新UI
+    let _lastCoreStatus = null;
 
     const t = (key) => (window.i18n && window.i18n.t) ? window.i18n.t(key) : key;
 
@@ -55,7 +55,6 @@ window.Config = (function() {
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const data = await resp.json();
             currentConfig = typeof data === 'string' ? JSON.parse(data) : data;
-            // 只填充表单，不重建DOM
             populateForm();
         } catch (err) {
             console.error('刷新配置数据失败:', err);
@@ -83,7 +82,6 @@ window.Config = (function() {
 
         const payload = {};
 
-        // ---- 顶层字段 ----
         const fields = [
             { id: 'cfg-allow-lan', key: 'allow-lan', type: 'boolean' },
             { id: 'cfg-ipv6', key: 'ipv6', type: 'boolean' },
@@ -104,7 +102,6 @@ window.Config = (function() {
             }
         }
 
-        // ---- TUN 字段（仅当有变化时添加） ----
         const currentTun = currentConfig.tun || {};
         const newEnable = document.getElementById('cfg-tun-enable').checked;
         const newStack = document.getElementById('cfg-tun-stack').value;
@@ -122,7 +119,6 @@ window.Config = (function() {
             payload.tun = tunDiff;
         }
 
-        // 清理 undefined
         Object.keys(payload).forEach(k => {
             if (payload[k] === undefined) delete payload[k];
         });
@@ -173,7 +169,6 @@ window.Config = (function() {
                 throw new Error(`保存失败: ${resp.status} ${errText}`);
             }
 
-            // 保存成功，仅刷新数据（不重建DOM，避免闪烁）
             await refreshConfigData();
         } catch (err) {
             if (err.name !== 'AbortError') {
@@ -193,7 +188,6 @@ window.Config = (function() {
             if (!resp.ok) return;
             const data = await resp.json();
             const running = data.running === true;
-            // 只有状态变化时才更新UI
             if (running !== _lastCoreStatus) {
                 _lastCoreStatus = running;
                 coreRunning = running;
@@ -225,7 +219,7 @@ window.Config = (function() {
 
     function startCoreStatusPolling() {
         if (coreStatusTimer) clearInterval(coreStatusTimer);
-        _lastCoreStatus = null; // 重置状态
+        _lastCoreStatus = null;
         fetchCoreStatus();
         coreStatusTimer = setInterval(fetchCoreStatus, 5000);
     }
@@ -343,50 +337,24 @@ window.Config = (function() {
         }
     }
 
-    // ---------- 语言和主题 ----------
-    function updateLangButton() {
-        const btn = document.getElementById('config-lang-toggle');
-        if (!btn) return;
-        btn.textContent = t('config.lang_toggle');
-    }
-
-    function updateThemeButton() {
-        const btn = document.getElementById('config-theme-toggle');
-        if (!btn) return;
-        btn.textContent = t('config.theme_toggle');
-    }
-
-    function toggleLanguage() {
+    // ---------- 语言切换（修改：不再直接调用 fetchConfig） ----------
+    function toggleLanguage(lang) {
         if (!window.i18n) return;
-        const newLang = window.i18n.getLanguage() === 'zh' ? 'en' : 'zh';
-        window.i18n.setLanguage(newLang);
-        window.dispatchEvent(new CustomEvent('languageChanged', { detail: { lang: newLang } }));
-        fetchConfig();
+        window.i18n.setLanguage(lang);
+        window.dispatchEvent(new CustomEvent('languageChanged', { detail: { lang } }));
+        // 更新侧边栏语言按钮
         const langToggle = document.getElementById('langToggle');
         if (langToggle) {
             const span = langToggle.querySelector('#currentLang');
-            if (span) span.textContent = newLang === 'zh' ? '简' : 'EN';
+            if (span) span.textContent = lang === 'zh' ? '简' : 'EN';
         }
-    }
-
-    function toggleTheme() {
-        const current = document.documentElement.getAttribute('data-theme');
-        const newTheme = current === 'dark' ? 'light' : 'dark';
-        document.documentElement.setAttribute('data-theme', newTheme);
-        localStorage.setItem('fluxor-theme', newTheme);
-        const moonIcon = document.querySelector('.icon-moon');
-        const sunIcon = document.querySelector('.icon-sun');
-        if (moonIcon && sunIcon) {
-            moonIcon.style.display = newTheme === 'dark' ? 'block' : 'none';
-            sunIcon.style.display = newTheme === 'dark' ? 'none' : 'block';
-        }
-        updateThemeButton();
     }
 
     // ---------- 渲染 ----------
     function renderForm() {
         if (!container) return;
         const tun = currentConfig?.tun || {};
+        const currentLang = window.i18n ? window.i18n.getLanguage() : 'zh';
         container.innerHTML = `
             <div class="card">
                 <h3>${t('config.core_config')}</h3>
@@ -426,7 +394,6 @@ window.Config = (function() {
                         <span class="slider"></span>
                     </label>
                 </div>
-                <!-- TUN 高级选项直接显示 -->
                 <div class="config-row">
                     <label>${t('config.tun_stack')}</label>
                     <select id="cfg-tun-stack">
@@ -470,19 +437,31 @@ window.Config = (function() {
                 </div>
                 <div class="button-group">
                     <button id="op-core-toggle" class="btn btn-success">${t('config.start_core')}</button>
-                    <button id="op-reload" class="btn btn-secondary">${t('config.reload')}</button>
                     <button id="op-restart" class="btn btn-danger">${t('config.restart')}</button>
+                    <button id="op-reload" class="btn btn-secondary">${t('config.reload')}</button>
                     <button id="op-flush-fakeip" class="btn btn-secondary">${t('config.flush_fakeip')}</button>
                     <button id="op-flush-dns" class="btn btn-secondary">${t('config.flush_dns')}</button>
                     <button id="op-update-geo" class="btn btn-secondary">${t('config.update_geo')}</button>
                 </div>
             </div>
 
+            <!-- ===== 界面设置（主题 + 语言下拉菜单） ===== -->
             <div class="card">
                 <h3>${t('config.interface_settings')}</h3>
-                <div style="display:flex; gap:12px; flex-wrap:wrap;">
-                    <button id="config-lang-toggle" class="btn" style="background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border-color);">${t('config.lang_toggle')}</button>
-                    <button id="config-theme-toggle" class="btn" style="background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border-color);">${t('config.theme_toggle')}</button>
+                <div class="config-row">
+                    <label>${t('config.theme')}</label>
+                    <select id="config-theme-select">
+                        <option value="light">${t('config.theme_light')}</option>
+                        <option value="dark">${t('config.theme_dark')}</option>
+                        <option value="system">${t('config.theme_system')}</option>
+                    </select>
+                </div>
+                <div class="config-row">
+                    <label>${t('config.language')}</label>
+                    <select id="config-language-select">
+                        <option value="zh">${t('config.lang_zh')}</option>
+                        <option value="en">${t('config.lang_en')}</option>
+                    </select>
                 </div>
             </div>
 
@@ -505,8 +484,18 @@ window.Config = (function() {
         bindEvents();
         populateForm();
         startCoreStatusPolling();
-        updateLangButton();
-        updateThemeButton();
+
+        // 设置主题下拉初始值
+        const themeSelect = document.getElementById('config-theme-select');
+        if (themeSelect && window.themeManager) {
+            themeSelect.value = window.themeManager.getTheme();
+        }
+
+        // 设置语言下拉初始值
+        const langSelect = document.getElementById('config-language-select');
+        if (langSelect && window.i18n) {
+            langSelect.value = window.i18n.getLanguage() || 'zh';
+        }
     }
 
     function populateForm() {
@@ -520,7 +509,6 @@ window.Config = (function() {
             document.getElementById('cfg-mode').value = cfg.mode || 'rule';
             document.getElementById('cfg-interface-name').value = cfg['interface-name'] || '';
             document.getElementById('cfg-tun-enable').checked = tun.enable || false;
-            // 堆栈值匹配下拉选项（大小写敏感）
             const stackVal = tun.stack || 'System';
             document.getElementById('cfg-tun-stack').value = stackVal;
             document.getElementById('cfg-tun-device').value = tun.device || '';
@@ -548,17 +536,48 @@ window.Config = (function() {
             }
         });
 
-        document.getElementById('op-reload').onclick = reloadConfig;
+        // 按钮事件（顺序调整）
+        document.getElementById('op-core-toggle').onclick = coreRunning ? stopCore : startCore;
         document.getElementById('op-restart').onclick = restartCore;
+        document.getElementById('op-reload').onclick = reloadConfig;
         document.getElementById('op-flush-fakeip').onclick = flushFakeIP;
         document.getElementById('op-flush-dns').onclick = flushDNSCache;
         document.getElementById('op-update-geo').onclick = updateGeoDB;
         document.getElementById('dns-query').onclick = dnsQuery;
 
-        document.getElementById('config-lang-toggle').addEventListener('click', toggleLanguage);
-        document.getElementById('config-theme-toggle').addEventListener('click', toggleTheme);
+        // ===== 主题下拉菜单 =====
+        const themeSelect = document.getElementById('config-theme-select');
+        if (themeSelect && window.themeManager) {
+            themeSelect.addEventListener('change', (e) => {
+                window.themeManager.setTheme(e.target.value);
+            });
+        }
 
-        window.addEventListener('languageChanged', updateLangButton);
+        // ===== 语言下拉菜单 =====
+        const langSelect = document.getElementById('config-language-select');
+        if (langSelect && window.i18n) {
+            langSelect.addEventListener('change', (e) => {
+                toggleLanguage(e.target.value);
+            });
+        }
+
+        // 监听外部主题变化，同步下拉菜单
+        window.addEventListener('themeChanged', (e) => {
+            const select = document.getElementById('config-theme-select');
+            if (select) {
+                select.value = e.detail.theme;
+            }
+        });
+
+        // 监听语言变化（由侧边栏或移动端顶栏触发），同步下拉值并刷新页面
+        window.addEventListener('languageChanged', (e) => {
+            const select = document.getElementById('config-language-select');
+            if (select && e.detail && e.detail.lang) {
+                select.value = e.detail.lang;
+            }
+            // 重新加载配置以刷新界面文字（确保所有 t() 调用更新）
+            fetchConfig();
+        });
     }
 
     async function init() {
@@ -571,7 +590,8 @@ window.Config = (function() {
         if (saveTimeout) clearTimeout(saveTimeout);
         if (abortController) abortController.abort();
         stopCoreStatusPolling();
-        window.removeEventListener('languageChanged', updateLangButton);
+        window.removeEventListener('languageChanged', () => {});
+        window.removeEventListener('themeChanged', () => {});
     }
 
     return { init, destroy };

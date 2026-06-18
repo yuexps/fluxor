@@ -337,3 +337,39 @@ func handleRulesDisable(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 }
+// handleProviderProxies 获取指定订阅的代理信息（含流量/有效期）
+// GET /providers/proxies/{encodedName}
+// handleProviderProxies 处理订阅信息获取（GET）和更新（PUT）
+func handleProviderProxies(w http.ResponseWriter, r *http.Request) {
+	// 提取路径 /providers/proxies/{name}
+	path := r.URL.Path
+	trimmed := strings.TrimPrefix(path, baseURL+"/providers/proxies/")
+	if trimmed == "" {
+		writeJSONError(w, http.StatusBadRequest, "缺少代理名称")
+		return
+	}
+	targetPath := "/providers/proxies/" + trimmed
+
+	var resp *http.Response
+	var err error
+
+	switch r.Method {
+	case http.MethodGet:
+		resp, err = coreRequest("GET", targetPath, nil)
+	case http.MethodPut:
+		resp, err = coreRequest("PUT", targetPath, r.Body)
+	default:
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if err != nil {
+		writeJSONError(w, http.StatusBadGateway, "请求失败: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}

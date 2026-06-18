@@ -2,6 +2,7 @@
     const pages = ['overview', 'proxies', 'rules', 'connections', 'logs', 'config', 'subscription'];
     let currentPage = 'overview';
     let mobileTabBarCreated = false;
+    let mobileTopBarCreated = false; // 新增
 
     const moduleMap = {
         overview: 'Overview',
@@ -81,11 +82,18 @@
                 if (labelSpan) labelSpan.textContent = t('nav.' + page);
             }
         });
-        // 更新语言切换按钮文字
+        // 更新语言切换按钮（桌面侧边栏）
         const langToggle = document.getElementById('langToggle');
         if (langToggle) {
             const currentLang = window.i18n ? window.i18n.getLanguage() : 'zh';
             const span = langToggle.querySelector('#currentLang');
+            if (span) span.textContent = currentLang === 'zh' ? '简' : 'EN';
+        }
+        // 新增：更新移动顶栏语言按钮
+        const mobileLangBtn = document.getElementById('mobileLangToggle');
+        if (mobileLangBtn) {
+            const currentLang = window.i18n ? window.i18n.getLanguage() : 'zh';
+            const span = mobileLangBtn.querySelector('#mobileCurrentLang');
             if (span) span.textContent = currentLang === 'zh' ? '简' : 'EN';
         }
     }
@@ -111,13 +119,12 @@
                 const newLang = window.i18n.getLanguage() === 'zh' ? 'en' : 'zh';
                 window.i18n.setLanguage(newLang);
                 window.dispatchEvent(new CustomEvent('languageChanged', { detail: { lang: newLang } }));
-                // 刷新当前页面内容（模块重新初始化）
                 const mod = window[moduleMap[currentPage]];
                 if (mod && typeof mod.destroy === 'function') mod.destroy();
                 showPage(currentPage);
             });
         }
-        // 监听全局语言变化事件（来自 config.js 等）
+        // 移动端语言按钮事件（在 initMobileTopBar 中绑定，但监听 languageChanged 统一更新）
         window.addEventListener('languageChanged', updateSidebarLabels);
     }
 
@@ -135,7 +142,7 @@
                     <line x1="3" y1="12" x2="21" y2="12"></line>
                     <line x1="3" y1="18" x2="21" y2="18"></line>
                 </svg>
-                <svg class="icon-close" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;">
+                <svg class="icon-close" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none;">
                     <line x1="18" y1="6" x2="6" y2="18"></line>
                     <line x1="6" y1="6" x2="18" y2="18"></line>
                 </svg>
@@ -191,6 +198,7 @@
                 }
                 prevMobile = nowMobile;
                 updateMobileTabBarVisibility();
+                updateMobileTopBarVisibility(); // 新增：同步顶栏
                 if (toggleBtn && toggleBtn._updateIcon) toggleBtn._updateIcon();
             }
         });
@@ -217,7 +225,7 @@
 
         const tabBar = document.createElement('div');
         tabBar.className = 'mobile-tabbar';
-        tabBar.style.display = 'none'; // 初始隐藏，由 update 控制
+        tabBar.style.display = 'none';
         const items = [
             { page: 'overview', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>', labelKey: 'nav.overview' },
             { page: 'proxies', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>', labelKey: 'nav.proxies' },
@@ -246,24 +254,137 @@
         updateMobileTabBarVisibility();
     }
 
+    // ===== 新增：移动端顶栏 =====
+    function updateMobileTopBarVisibility() {
+        const isMobile = window.innerWidth <= 768;
+        const topbar = document.getElementById('mobile-topbar');
+        if (topbar) {
+            topbar.style.display = isMobile ? 'flex' : 'none';
+        }
+    }
+
+    function initMobileTopBar() {
+        if (mobileTopBarCreated) return;
+
+        const topbar = document.createElement('div');
+        topbar.id = 'mobile-topbar';
+        topbar.innerHTML = `
+            <span class="topbar-title" id="mobileTitle">Fluxor</span>
+            <div class="topbar-actions">
+                <button id="mobileLangToggle" aria-label="Switch Language">
+                    <span id="mobileCurrentLang">简</span>
+                </button>
+                <button id="mobileThemeToggle" aria-label="Toggle Theme">
+                    <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                    <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none;"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+                    <svg class="icon-auto" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none;">
+                        <circle cx="12" cy="12" r="10"/>
+                        <text x="12" y="16" font-size="14" text-anchor="middle" fill="currentColor" stroke="none">A</text>
+                    </svg>
+                </button>
+            </div>
+        `;
+
+        document.body.prepend(topbar);
+        mobileTopBarCreated = true;
+
+        // 标题点击回到概览
+        const title = document.getElementById('mobileTitle');
+        if (title) {
+            title.addEventListener('click', () => {
+                if (currentPage !== 'overview') {
+                    currentPage = 'overview';
+                    showPage('overview');
+                }
+            });
+        }
+
+        // 语言切换（与桌面侧边栏一致）
+        const mobileLangBtn = document.getElementById('mobileLangToggle');
+        if (mobileLangBtn && window.i18n) {
+            mobileLangBtn.addEventListener('click', () => {
+                const newLang = window.i18n.getLanguage() === 'zh' ? 'en' : 'zh';
+                window.i18n.setLanguage(newLang);
+                window.dispatchEvent(new CustomEvent('languageChanged', { detail: { lang: newLang } }));
+                const mod = window[moduleMap[currentPage]];
+                if (mod && typeof mod.destroy === 'function') mod.destroy();
+                showPage(currentPage);
+            });
+        }
+
+        // 主题切换（与桌面侧边栏一致）
+        const mobileThemeBtn = document.getElementById('mobileThemeToggle');
+        if (mobileThemeBtn && window.themeManager) {
+            mobileThemeBtn.addEventListener('click', () => {
+                const current = window.themeManager.getTheme();
+                const cycle = { light: 'dark', dark: 'system', system: 'light' };
+                window.themeManager.setTheme(cycle[current]);
+            });
+        }
+
+        updateMobileTopBarVisibility();
+        // 初始更新语言显示
+        updateSidebarLabels();
+    }
+
+    // ========== 主题管理 ==========
     function initTheme() {
         const themeToggle = document.getElementById('themeToggle');
-        const moonIcon = document.querySelector('.icon-moon');
-        const sunIcon = document.querySelector('.icon-sun');
-        function setTheme(theme) {
-            document.documentElement.setAttribute('data-theme', theme);
-            localStorage.setItem('fluxor-theme', theme);
-            if (moonIcon && sunIcon) {
-                moonIcon.style.display = theme === 'dark' ? 'block' : 'none';
-                sunIcon.style.display = theme === 'dark' ? 'none' : 'block';
-            }
+        // 移除局部变量，改用全局遍历更新
+
+        let systemMediaQuery = null;
+        let systemListener = null;
+
+        function getSystemTheme() {
+            return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
         }
-        const saved = localStorage.getItem('fluxor-theme');
-        setTheme(saved === 'light' ? 'light' : 'dark');
+
+        function setTheme(theme) {
+            // 移除旧监听
+            if (systemMediaQuery && systemListener) {
+                systemMediaQuery.removeEventListener('change', systemListener);
+                systemMediaQuery = null;
+                systemListener = null;
+            }
+
+            localStorage.setItem('fluxor-theme', theme);
+
+            let effectiveTheme = theme;
+            if (theme === 'system') {
+                effectiveTheme = getSystemTheme();
+                systemMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+                systemListener = function(e) {
+                    document.documentElement.setAttribute('data-theme', e.matches ? 'dark' : 'light');
+                };
+                systemMediaQuery.addEventListener('change', systemListener);
+            }
+
+            document.documentElement.setAttribute('data-theme', effectiveTheme);
+
+            // 更新所有图标（桌面侧边栏 + 移动顶栏）
+            document.querySelectorAll('.icon-moon').forEach(el => el.style.display = theme === 'dark' ? 'block' : 'none');
+            document.querySelectorAll('.icon-sun').forEach(el => el.style.display = theme === 'light' ? 'block' : 'none');
+            document.querySelectorAll('.icon-auto').forEach(el => el.style.display = theme === 'system' ? 'block' : 'none');
+
+            window.dispatchEvent(new CustomEvent('themeChanged', { detail: { theme } }));
+        }
+
+        function getTheme() {
+            return localStorage.getItem('fluxor-theme') || 'system';
+        }
+
+        // 暴露给其他模块（如 config.js）
+        window.themeManager = { setTheme, getTheme };
+
+        // 初始化
+        const saved = getTheme();
+        setTheme(saved);
+
         if (themeToggle) {
             themeToggle.addEventListener('click', () => {
-                const current = document.documentElement.getAttribute('data-theme');
-                setTheme(current === 'dark' ? 'light' : 'dark');
+                const current = getTheme();
+                const cycle = { light: 'dark', dark: 'system', system: 'light' };
+                setTheme(cycle[current]);
             });
         }
     }
@@ -273,10 +394,12 @@
         createContainers();
         initNavigation();
         initSidebar();
-        initTheme();
+        initTheme();        // 主题初始化（会暴露 themeManager）
         initLanguage();
-        initMobileTabBar(); // <--- 新增，确保底部导航被创建
+        initMobileTabBar();
+        initMobileTopBar(); // 新增：创建移动顶栏
         updateMobileTabBarVisibility();
+        updateMobileTopBarVisibility();
         showPage('overview');
         console.log('[App] 初始化完成');
     }

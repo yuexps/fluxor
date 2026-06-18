@@ -200,7 +200,6 @@ window.i18n = (function() {
             'config.core_checking': '检测中...',
             'config.start_core': '启动内核',
             'config.stop_core': '停止内核',
-            // 新增（对话框 & TUN 弹窗）
             'config.core_start_success': '内核启动成功',
             'config.core_start_failed': '内核启动失败',
             'config.confirm_stop_core': '确定要停止内核吗？所有连接将断开。',
@@ -218,6 +217,13 @@ window.i18n = (function() {
             'config.dns_query_failed': 'DNS 查询失败',
             'config.dns_no_record': '无记录',
             'config.tun_settings': 'TUN设置',
+            'config.theme': '主题',
+            'config.theme_light': '浅色',
+            'config.theme_dark': '深色',
+            'config.theme_system': '跟随系统',
+            'config.language': '界面语言',
+            'config.lang_zh': '简体中文',
+            'config.lang_en': 'English',
 
             // ===== 订阅 =====
             'subscription.title': '订阅中心',
@@ -243,7 +249,7 @@ window.i18n = (function() {
             'subscription.no_subscriptions': '暂无订阅',
             'subscription.add_modal_title': '添加订阅',
             'subscription.edit_modal_title': '编辑订阅',
-            'subscription.modal_hint': '添加后将保存在本页列表，需点击主界面按钮持久化。',
+            'subscription.modal_hint': '添加后将保存订阅列表，需保存并应用。',
             'subscription.save_to_list': '保存到列表',
             'subscription.cancel': '取消',
             'subscription.save_success': '配置已保存',
@@ -252,6 +258,14 @@ window.i18n = (function() {
             'subscription.ui_panel': '外置面板',
             'subscription.meta_backend_url': 'MetaCubeXD 后端地址',
             'subscription.meta_backend_placeholder': 'http(s)://host:port（留空则不修改）',
+            'subscription.expire': '有效期',
+            'subscription.expire_forever': '不限时',
+            'subscription.traffic_usage': '流量使用',
+            'subscription.expire_forever': '不限时',
+            'subscription.updated_at_label': '更新于：',
+            'subscription.valid_until_label': '有效期：',
+            'subscription.traffic_unavailable': '流量信息不可用',
+            'common.unknown': '未知',
         },
         en: {
             // ===== Common =====
@@ -448,7 +462,6 @@ window.i18n = (function() {
             'config.core_checking': 'Checking...',
             'config.start_core': 'Start Core',
             'config.stop_core': 'Stop Core',
-            // 新增（对话框 & TUN 弹窗）
             'config.core_start_success': 'Core started successfully',
             'config.core_start_failed': 'Core start failed',
             'config.confirm_stop_core': 'Are you sure to stop the core? All connections will be disconnected.',
@@ -466,6 +479,13 @@ window.i18n = (function() {
             'config.dns_query_failed': 'DNS query failed',
             'config.dns_no_record': 'No record',
             'config.tun_settings': 'TUN Settings',
+            'config.theme': 'Theme',
+            'config.theme_light': 'Light',
+            'config.theme_dark': 'Dark',
+            'config.theme_system': 'System',
+            'config.language': 'Language',
+            'config.lang_zh': '简体中文',
+            'config.lang_en': 'English',
 
             // ===== Subscription =====
             'subscription.title': 'Subscription Center',
@@ -500,6 +520,14 @@ window.i18n = (function() {
             'subscription.ui_panel': 'External UI Panel',
             'subscription.meta_backend_url': 'MetaCubeXD Backend URL',
             'subscription.meta_backend_placeholder': 'http(s)://host:port (leave empty to keep default)',
+            'subscription.expire': 'Expiry',
+            'subscription.expire_forever': 'Unlimited',
+            'subscription.traffic_usage': 'Traffic Usage',
+            'subscription.expire_forever': 'Unlimited',
+            'subscription.updated_at_label': 'Updated: ',
+            'subscription.valid_until_label': 'Valid until: ',
+            'subscription.traffic_unavailable': 'Traffic info unavailable',
+            'common.unknown': 'Unknown',
         }
     };
 

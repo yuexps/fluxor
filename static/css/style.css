@@ -872,3 +872,72 @@ input:checked + .slider:before {
 #external-control-card a:hover {
     color: var(--text-primary);
 }
+/* ========== 移动端顶栏 ========== */
+#mobile-topbar {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 50px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+    z-index: 100;
+    align-items: center;
+    padding: 0 16px;
+    justify-content: space-between;
+    box-sizing: border-box;
+}
+#mobile-topbar .topbar-title {
+    font-weight: 600;
+    font-size: 18px;
+    cursor: pointer;
+    color: var(--text-primary);
+    user-select: none;
+}
+#mobile-topbar .topbar-actions {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+#mobile-topbar .topbar-actions button {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 4px;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+}
+#mobile-topbar .topbar-actions button:hover {
+    color: var(--text-primary);
+}
+#mobile-topbar .topbar-actions button svg {
+    width: 20px;
+    height: 20px;
+}
+
+/* 移动端主内容区域增加顶部和底部内边距 */
+@media (max-width: 768px) {
+    #mobile-topbar {
+        display: flex;
+    }
+    .main-content {
+        padding: 60px 12px 70px 12px; /* 顶栏50px + 底部导航约60px */
+    }
+}
+/* ========== 修复添加订阅按钮底色丢失 ========== */
+#addSubBtn {
+    background: var(--accent) !important;
+    color: #fff !important;
+    border: none !important;
+}
+#addSubBtn:hover {
+    background: var(--accent-hover) !important;
+    filter: brightness(1.05);
+}
+#addSubBtn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}

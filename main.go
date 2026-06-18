@@ -108,6 +108,8 @@ func main() {
 	// 订阅中心 API
 	mux.HandleFunc(baseURL+"/subscribe/config", handleSubscribeConfigAPI)
 	mux.HandleFunc(baseURL+"/subscribe/generate", handleGenerateConfig)
+	// 订阅信息（含流量、有效期）
+    mux.HandleFunc(baseURL+"/providers/proxies/", handleProviderProxies)
 
 	// ===== WebSocket 代理（实时数据） =====
 	mux.HandleFunc(baseURL+"/traffic", wsProxyHandler("/traffic"))
